@@ -1,0 +1,66 @@
+---
+title: "Metabolomics HCOF study"
+subtitle: "Arrange and tidy data"
+author: "Sofie Olund Villumsen"
+date: "2023"
+output: html_document
+---
+
+# Initial settings
+Clear workspace
+```{r}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE}
+library(tidyverse)
+library(impute) # Imputing data with KNN
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Metabolomics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+clinicaldata_selected <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Overfeeding_study/Transcriptomics/data/02_clinicaldata_selected_imputed.csv")
+
+metabodata <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Baseline_study/Metabolomics/data/02_metabolomics_imputed_data_log2_zscore.csv")
+
+# Get list with metabolite names
+metabonames <- colnames(metabodata)[3:ncol(metabodata)]
+```
+
+
+#Prepare metabolomics df for the various analyses
+## Metabolomics main analyses
+```{r}
+metabodata_ <- metabodata %>% 
+  filter(Label != "C") %>% 
+  left_join(., clinicaldata_selected, by = c("Sample_ID" = "id", "Label" = "visit")) %>% 
+  mutate(sample_id = paste("Sample", .$Sample_ID, .$bwcat, .$Label, sep = "_")) %>% 
+  arrange(bwcat, NAFLD, Label) %>% 
+  select(sample_id, all_of(metabonames))
+metabodata_
+
+metabodata_ %>% 
+  write_csv(paste(path, "data/02_visitAB_metabolomics.csv", sep="/"))
+```
+
+## Metabolomics subgroup analyses (NAFLD dimension)
+```{r}
+metabodata_nafld <- metabodata %>% 
+  filter(Label != "C") %>% 
+  left_join(., clinicaldata_selected, by = c("Sample_ID" = "id", "Label" = "visit")) %>% 
+  mutate(sample_id = paste("Sample", .$Sample_ID, .$bwcat, .$Label , .$NAFLD, sep = "_")) %>% 
+  arrange(bwcat,  NAFLD, Label) %>% 
+  select(sample_id, all_of(metabonames))
+metabodata_nafld
+
+metabodata_nafld %>% 
+  write_csv(paste(path, "data/02_visitAB_nafld_metabolomics.csv", sep="/"))
+```

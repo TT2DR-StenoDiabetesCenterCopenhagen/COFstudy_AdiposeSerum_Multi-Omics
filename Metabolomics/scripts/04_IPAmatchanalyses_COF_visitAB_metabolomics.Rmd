@@ -1,0 +1,205 @@
+---
+title: "Metabolomics Overfeeding Analysis"
+subtitle: "IPA"
+author: "Sofie Olund Villumsen"
+date: "26/06/2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE}
+library(readxl)
+library(tidyverse)
+library(colorRamp2)
+library(ComplexHeatmap) 
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Metabolomics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+ipa_matchanalyses_A5_A4_A3 <- read_xls(paste(path, "results/results_IPA/IPA_heatmap_matchanalyses_A4vsA3vsA5_bwcat_visitAB.xls", sep="/")) %>% 
+  mutate(variables = paste(.$`© 2000-2023 QIAGEN. All rights reserved.`, .$...2, sep="_"))
+
+ipa_matchanalyses_all_upstream <- read_xls(paste(path, "results/results_IPA/IPA_heatmap_matchanalyses_A4vsA3vsA5vsA10vsA11_bwcat_visitAB_upstreamregulators.xls", sep="/")) %>% 
+  mutate(variables = paste(.$`© 2000-2023 QIAGEN. All rights reserved.`, .$...2, sep="_"))
+
+ipa_matchanalyses_all_diseasefun <- read_xls(paste(path, "results/results_IPA/IPA_heatmap_matchanalyses_A4vsA3vsA5vsA10vsA11_bwcat_visitAB_diseasesandfunctions.xls", sep="/")) %>% 
+  mutate(variables = paste(.$`© 2000-2023 QIAGEN. All rights reserved.`, .$...2, sep="_"))
+```
+
+# Diseases: A5, A4, A3
+Clean data 
+```{r}
+ipa_matchanalyses_cleaned <- ipa_matchanalyses_A5_A4_A3[-c(1:1), -c(1:2)]
+
+colnames(ipa_matchanalyses_cleaned) <- c("NBW: COF vs baseline", "LBW: COF vs baseline", "Delta response: LBW vs NBW", "Variables")
+rownames(ipa_matchanalyses_cleaned) <- ipa_matchanalyses_A5_A4_A3$variables[2:nrow(ipa_matchanalyses_A5_A4_A3)]
+
+top_biofunctions_A5_A4_A3 <- ipa_matchanalyses_cleaned[1:7,] %>% 
+  mutate_all(as.numeric) %>% 
+  select(`Delta response: LBW vs NBW`, `LBW: COF vs baseline`,`NBW: COF vs baseline`) 
+
+ipa_matchanalyses_A5_A4_A3 <- ipa_matchanalyses_A5_A4_A3 %>% 
+  separate(variables, c("other", "biofunction"), sep="_")
+
+rownames(top_biofunctions_A5_A4_A3) <- ipa_matchanalyses_A5_A4_A3$biofunction[2:8]
+
+top_biofunctions_A5_A4_A3
+```
+
+## Heatmap
+```{r}
+heatmap_obj <- Heatmap(top_biofunctions_A5_A4_A3, 
+                       col = colorRamp2(c(min(top_biofunctions_A5_A4_A3), max(top_biofunctions_A5_A4_A3)), c("#283A90", "#BE2625")),
+                       name = "Zscore",
+                       cluster_rows = FALSE,  # To prevent row clustering
+                       column_names_side = "top",
+                       row_names_side = "left",
+                       show_column_names = TRUE,  # To show column names
+                       column_names_rot = 0,
+                       column_names_centered = TRUE,
+                       column_labels = c("Delta", "LBW", "NBW"),
+                       show_row_names = TRUE, # To show row names
+                       cluster_columns = FALSE,
+                       column_names_gp = gpar(fontsize = 7),
+                       row_names_gp = gpar(fontsize = 7), 
+                       show_heatmap_legend = TRUE
+                       ) 
+
+heatmap_obj
+
+
+# Save the heatmap as a PDF file
+tiff(file = paste(path, "results/04_IPAmatchanalysis_heatmap_A5A3A4_visitAB_NBWvsLBW_metabolomics.tiff", sep="/"),
+    width = 10,
+    height = 6,
+    units = "cm",
+    res = 600)
+
+print(heatmap_obj)
+dev.off()
+
+```
+
+
+# Diseases: A4, A3, A10, A11 based on A5
+Clean data 
+```{r}
+ipa_matchanalyses_all_diseasefun_cleaned <- ipa_matchanalyses_all_diseasefun %>% 
+  filter(`© 2000-2023 QIAGEN. All rights reserved.` != "Diseases and Bio Functions") %>% 
+  select(`© 2000-2023 QIAGEN. All rights reserved.`, ...2, ...3, ...4, ...5, ...6) %>% 
+  head(n=10)
+
+colnames(ipa_matchanalyses_all_diseasefun_cleaned) <- c("Disease", "Delta", "LBW w/ NAFLD", "LBW", "NBW", "LBW w/o NAFLD")
+rownames(ipa_matchanalyses_all_diseasefun_cleaned) <- head(ipa_matchanalyses_all_diseasefun$`© 2000-2023 QIAGEN. All rights reserved.`[2:nrow(ipa_matchanalyses_all_diseasefun)], n=10)
+
+top_biofunctions_all_diseasefun <- ipa_matchanalyses_all_diseasefun_cleaned %>% 
+  select(NBW, LBW, `LBW w/o NAFLD`,`LBW w/ NAFLD`) %>% 
+  mutate_all(as.numeric)
+
+rownames(top_biofunctions_all_diseasefun) <- ipa_matchanalyses_all_diseasefun_cleaned$Disease
+
+top_biofunctions_all_diseasefun
+```
+
+## Heatmap
+```{r}
+heatmap_obj_diseasefun <- Heatmap(top_biofunctions_all_diseasefun, 
+                       col = colorRamp2(c(min(top_biofunctions_all_diseasefun),0,
+                                          max(top_biofunctions_all_diseasefun)), 
+                                        c("#6DCD59", "white", "#FDE725")),
+                       name = "Activation \nZscore",
+                       cluster_rows = FALSE,  # To prevent row clustering
+                       column_names_side = "top",
+                       row_names_side = "left",
+                       show_column_names = TRUE,  # To show column names
+                       column_names_rot = 0,
+                       column_names_centered = TRUE,
+                       show_row_names = TRUE, # To show row names
+                       cluster_columns = FALSE,
+                       column_names_gp = gpar(fontsize = 8),
+                       row_names_gp = gpar(fontsize = 10), 
+                       show_heatmap_legend = TRUE
+                       ) 
+
+heatmap_obj_diseasefun
+
+
+# Save the heatmap as a PDF file
+png(file = paste(path, "results/04_IPAmatchanalysis_heatmap_A5A3A4A10A11_diseasefun_visitAB_NBWvsLBW_metabolomics.png", sep="/"),
+    width = 6,
+    height = 6,
+    units = "cm",
+    res = 300)
+
+print(heatmap_obj_diseasefun)
+dev.off()
+```
+
+# Upstream regulators: A4, A3, A10, A11 based on A5
+Clean data 
+```{r}
+ipa_matchanalyses_all_upstream_cleaned <- ipa_matchanalyses_all_upstream %>% 
+  filter(`© 2000-2023 QIAGEN. All rights reserved.` != "Upstream Regulators") %>% 
+  select(`© 2000-2023 QIAGEN. All rights reserved.`, ...2, ...3, ...4, ...5, ...6) %>% 
+  head(n=10)
+
+colnames(ipa_matchanalyses_all_upstream_cleaned) <- c("Disease", "Delta", "LBW w/ NAFLD", "LBW", "NBW", "LBW w/o NAFLD")
+rownames(ipa_matchanalyses_all_upstream_cleaned) <- head(ipa_matchanalyses_all_upstream$`© 2000-2023 QIAGEN. All rights reserved.`[2:nrow(ipa_matchanalyses_all_upstream)], n=10)
+
+top_biofunctions_all_upstream <- ipa_matchanalyses_all_upstream_cleaned %>% 
+  select(NBW, LBW, `LBW w/o NAFLD`,`LBW w/ NAFLD`) %>% 
+  mutate_all(as.numeric)
+
+rownames(top_biofunctions_all_upstream) <- ipa_matchanalyses_all_upstream_cleaned$Disease
+
+top_biofunctions_all_upstream
+```
+
+## Heatmap
+```{r}
+heatmap_obj_all_upstream <- Heatmap(top_biofunctions_all_upstream, 
+                       col = colorRamp2(c(min(top_biofunctions_all_upstream),0,
+                                          max(top_biofunctions_all_upstream)), 
+                                        c("#6DCD59", "white", "#FDE725")),
+                       name = "Activation \nZscore",
+                       cluster_rows = FALSE,  # To prevent row clustering
+                       column_names_side = "top",
+                       row_names_side = "left",
+                       show_column_names = TRUE,  # To show column names
+                       column_names_rot = 0,
+                       column_names_centered = TRUE,
+                       show_row_names = TRUE, # To show row names
+                       cluster_columns = FALSE,
+                       column_names_gp = gpar(fontsize = 8),
+                       row_names_gp = gpar(fontsize = 10), 
+                       show_heatmap_legend = TRUE
+                       ) 
+
+heatmap_obj_all_upstream
+
+
+# Save the heatmap as a PDF file
+png(file = paste(path, "results/04_IPAmatchanalysis_heatmap_A5A3A4A10A11_upstream_visitAB_NBWvsLBW_metabolomics.png", sep="/"),
+    width = 6,
+    height = 6,
+    units = "cm",
+    res = 300)
+
+print(heatmap_obj_all_upstream)
+dev.off()
+```
