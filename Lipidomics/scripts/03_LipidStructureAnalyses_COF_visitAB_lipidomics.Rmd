@@ -24,7 +24,7 @@ library(webr)
 
 Set wd
 ```{r setup}
-path <- 'L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Lipidomics'
+path <- 'L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Lipidomics'
 knitr::opts_knit$set(root.dir = path)
 ```
 
@@ -38,7 +38,7 @@ lipidomicsdata_visitAB_nafld <- read_csv(paste(path, "data/01_lipidomicsdata_vis
 
 lipid_database <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Baseline_study/Lipidomics/data/01_lipid_db_id.csv") %>% select(everything(), -...1)
 
-lipidomicsdata_visitAB_deltacomparison <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Lipidomics/data/02_A5_deltaAB_LBWvsNBW_lipidomics_imputed.csv")
+lipidomicsdata_visitAB_deltacomparison <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Lipidomics/data/02_A5_deltaAB_LBWvsNBW_lipidomics_imputed.csv")
 ```
 
 # Organize data

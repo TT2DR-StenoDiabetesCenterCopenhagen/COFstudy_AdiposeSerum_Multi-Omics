@@ -22,7 +22,7 @@ rm(list = ls())
 
 Load packages
 ```{r message=FALSE}
-suppressPackageStartupMessages({library(tidyverse)})
+library(tidyverse)
 library(limma) 
 library(ComplexHeatmap) 
 library(PCAtools)
@@ -33,7 +33,7 @@ library(cowplot)
 
 Set wd
 ```{r setup}
-path <- 'L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Lipidomics'
+path <- 'L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Lipidomics'
 knitr::opts_knit$set(root.dir = path)
 ```
 
