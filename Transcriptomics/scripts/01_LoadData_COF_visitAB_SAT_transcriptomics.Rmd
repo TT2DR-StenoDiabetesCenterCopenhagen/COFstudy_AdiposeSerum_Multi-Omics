@@ -20,7 +20,7 @@ library(tidyverse)
 
 Set wd 
 ```{r setup}
-path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics/"
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Transcriptomics/"
 
 knitr::opts_knit$set(root.dir = path)
 ```

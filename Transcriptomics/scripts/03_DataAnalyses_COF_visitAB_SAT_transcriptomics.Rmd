@@ -27,7 +27,7 @@ library(tidyverse)
 
 Set wd
 ```{r setup}
-path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics"
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Transcriptomics"
 
 knitr::opts_knit$set(root.dir = path)
 ```
@@ -54,9 +54,10 @@ genecounts_sat %>%
 
 Annotate
 ```{r}
-genecounts_sat_geneID <- genecounts_sat %>%   
-  left_join(., annotation,  by = c("Geneid" = "Gene.stable.ID")) %>% 
-  unite("Geneid",Gene.name,Geneid) %>% 
+genecounts_sat_geneID <- genecounts_sat %>%  
+  rename(geneid = Geneid) %>% 
+  left_join(., annotation,  by = c("geneid" = "Gene.stable.ID")) %>% 
+  unite("Geneid", Gene.name, geneid, sep = "_") %>% 
   select(Geneid, everything(), -c("Gene.type", "Gene.description")) 
 genecounts_sat_geneID
 ```
