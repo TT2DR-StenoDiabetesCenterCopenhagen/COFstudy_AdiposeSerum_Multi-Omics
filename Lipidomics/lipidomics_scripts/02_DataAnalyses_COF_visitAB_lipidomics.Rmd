@@ -1,0 +1,1317 @@
+---
+title: "Lipidomics Overfeeding Analysis"
+subtitle: "Differential Expression Analysis"
+author: "Sofie Olund Villumsen"
+date: "2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Initial settings
+Before below analyses, all data has undergone (in another script):
+- Imputation (KNN)
+- Normalization (log2)
+- Scaling (z-score/autoscale)
+
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE}
+suppressPackageStartupMessages({library(tidyverse)})
+library(limma) 
+library(ComplexHeatmap) 
+library(PCAtools)
+library(ggrepel)
+library(colorRamp2)
+library(cowplot)
+```
+
+Set wd
+```{r setup}
+path <- 'L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Lipidomics'
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+clinicaldata_selected <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Overfeeding_study/Transcriptomics/data/02_clinicaldata_selected_imputed.csv")
+
+lipidomicsdata_visitAB <- read_csv(paste(path, "data/01_lipidomicsdata_visitAB_imputed.csv", sep="/"))
+
+lipidomicsdata_visitAB_nafld <- read_csv(paste(path, "data/01_lipidomicsdata_visitAB_nafld_imputed.csv", sep="/"))
+
+lipid_database <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Baseline_study/Lipidomics/data/01_lipid_db_id.csv") %>% select(everything(), -...1)
+
+# Get a list of lipid names
+lipid_names <- colnames(lipidomicsdata_visitAB)[3:ncol(lipidomicsdata_visitAB)]
+```
+
+
+#Explorative analysis
+### PCA
+Create PCA object
+```{r}
+#Prepare data format of lipidomics data 
+y_ <- lipidomicsdata_visitAB %>%
+  t() %>% 
+  as.data.frame()
+colnames(y_) <- y_[1, ]
+lipidomicsdata_pca <- y_ %>% 
+  filter(Sample_001_NBW_A != "Sample_001_NBW_A") %>% #stupid way of removing first row and making it the column header..
+  mutate_all(., as.numeric)
+
+# Prepare data format of clinical data 
+x_ <- clinicaldata_selected %>%
+  arrange(bwcat, NAFLD, visit,id) %>% 
+  mutate(sample_id = paste("Sample", .$id, .$bwcat, .$visit, sep = "_"),
+         bwcat_visit = paste(.$bwcat, .$visit, sep = "_"),
+         `Birth weight` = `Birth weight - NAFLD status`) 
+metadata_pca <- x_ %>% 
+  select(c("id","HDL cholesterol", "LDL cholesterol", "Total cholesterol", "F-triglyceride", "GGT", "ALAT", "ASAT", "Hepatic fat", "HOMA-IR", "F-insulin", "F-C-peptide", "F-glucose", "VAT mass", "Total fat mass", "Total lean mass", "BMI", "Weight", "Height", "Birth weight", "NAFLD status", "Visit", "Birth weight category", "bwcat", "visit", "bwcat_visit")) %>% 
+  as.data.frame()
+rownames(metadata_pca) <- x_$sample_id
+metadata_pca
+
+clinicaldata_selected %>% 
+  group_by(bwcat, visit) %>%
+  count()
+
+pca_object <- pca(lipidomicsdata_pca, metadata = as.data.frame(metadata_pca), removeVar = 0.1)
+```
+
+```{r}
+combined_df <- x_ %>% 
+  left_join(lipidomicsdata_visitAB, by = join_by(sample_id)) 
+```
+
+
+#### Biplot 1: bwcat, visit
+```{r}
+biplot_loadings_bwcat_visitAB_1 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'visit', shape = 'bwcat', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings", 
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-30,20), ylim = c(-20, 20))
+biplot_loadings_bwcat_visitAB_1
+
+ggsave(paste(path, "results/02_PCAbiplot_bwcatvisit1_visitAB_lipidomics.png", sep="/"), plot = biplot_loadings_bwcat_visitAB_1, device = "png", width = 10, height = 6)
+```
+
+
+#### Biplot 2: bwcat, visit
+```{r}
+biplot_loadings_bwcat_visitAB_2 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'bwcat_visit', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings", 
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-30,30), ylim = c(-20, 20))
+biplot_loadings_bwcat_visitAB_2
+
+ggsave(paste(path, "results/02_PCAbiplot_bwcatvisit2_visitAB_lipidomics.png", sep="/"), plot = biplot_loadings_bwcat_visitAB_2, device = "png", width = 10, height = 6)
+```
+
+
+### Scree plot
+PCs explaining the variance: Check how many PC covers 80% of the variance
+```{r echo=FALSE}
+which(cumsum(pca_object$variance) > 80) [1]
+```
+
+```{r warning=FALSE, echo=FALSE}
+screeplot_ <- screeplot(pca_object, axisLabSize = 13, titleLabSize = 22, 
+                        hline = 80, 
+                        components = getComponents(pca_object, 1:14),
+                        vline = 14) +
+  geom_label(aes(13, 50, label = '80% explained variation', vjust = -1, size = 8))
+
+screeplot_
+ggsave(paste(path, "results/02_screeplot_visitAB_lipidomics.png", sep="/"), plot = screeplot_, device = "png", width = 10, height = 6)
+```
+
+
+### Eigencorr plots 
+Interpretation of r and r squared values: 
+* E1: Pearson's r is usually used to express the correlation between two quantities. For example let's say you want to demonstrate that the hours spend studying are correlated with the grade obtained in an exam. You could calculate Pearson's r to evaluate whether the two quantities are correlated. r values ranges from -1 to +1
+
+* E2: R^2 is usually used to evaluate the quality of fit of a model on data. It expresses what fraction of the variability of your dependent variable (Y) is explained by your independent variable (X). R^2 values ranges between 0 to +1
+
+#### E1
+```{r}
+tiff(file = paste(path, "results/02_eigencorplot_PearsonsR_visitAB_lipidomics.tiff", sep="/"), units="in", width=8, height=13, res=600, pointsize = 0.0001)
+eigencorplot(pca_object,
+    components = getComponents(pca_object, 1:4),
+    metavars = c("Birth weight category","Visit","NAFLD status","Birth weight","Height","Weight","BMI", "Total lean mass","Total fat mass","VAT mass","F-glucose","F-C-peptide","F-insulin", "HOMA-IR", "Hepatic fat", "ASAT", "ALAT", "GGT", "F-triglyceride", "Total cholesterol","LDL cholesterol","HDL cholesterol"),
+    col = c('#283A90', 'white', '#BE2625'),
+    cexCorval = 1.2,
+    colCorval = 'white',
+    fontCorval = 1,
+    fontMain = 1, 
+    posLab = 'bottomleft',
+    rotLabX = 45,
+    posColKey = 'bottom',
+    cexLabColKey = 1.5,
+    scale = TRUE,
+    plotRsquared = FALSE,
+    main = 'PC1-6 clinical correlations Pearsons r ',
+    corFUN = "pearson",
+    corUSE = "pairwise.complete.obs",
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+    colFrame = 'white')
+dev.off()
+```
+
+#### E2
+```{r}
+tiff(file = paste(path, "results/02_eigencorplot_PearsonsR2_visitAB_lipidomics.tiff", sep="/"), units="in", width=8, height=13, res=600, pointsize = 0.0001)
+  eigencorplot(pca_object,
+    components = getComponents(pca_object, 1:4),
+    metavars = c("Birth weight category","Visit","Height", "Weight","BMI","Total lean mass","Total fat mass", "VAT mass","F-glucose","F-C-peptide","F-insulin", "HOMA-IR","Total cholesterol","LDL cholesterol","HDL cholesterol", "F-triglyceride","Hepatic fat","ASAT","ALAT", "GGT","NAFLD status","Birth weight"),
+    col = c('white', 'gold', 'darkgreen'),
+    cexCorval = 1.2,
+    fontCorval = 1,
+    fontTitleX = 1, 
+    fontMain = 1, 
+    posLab = 'bottomleft',
+    posColKey = 'bottom',
+    rotLabX = 45,
+    scale = TRUE,
+    main = bquote(PC1-6 ~ clinical ~ correlations ~ Pearson ~ r^2),
+    plotRsquared = TRUE,
+    corFUN = 'pearson',
+    corUSE = 'pairwise.complete.obs',
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1))
+dev.off()
+```
+
+
+### Loadingsplots
+```{r echo=FALSE, warning=FALSE}
+loadingsplot <- plotloadings(pca_object,
+                              components = getComponents(pca_object, c(1,2,3,4)),
+                              rangeRetain = 0.1,
+                              labSize = 2.7,
+                              absolute = FALSE,
+                              title = 'Loadings plot',
+                              caption = 'Top 10% variables',
+                              shape = 23, shapeSizeRange = c(1, 16),
+                              col = c('white', 'forestgreen'),
+                              drawConnectors = FALSE)
+
+loadingsplot
+ggsave(paste(path, "results/02_loadingsplot_allPC_visitAB_lipidomics.png", sep="/"), plot = loadingsplot, device = "png", width = 25, height = 11)
+```
+
+
+
+# Main analyses: Differential abundance analyses
+Which lipids respond differently over time (between baseline and overfeeding) in LBWs relative to NBWs?
+
+# 1. Fit model: unpaired
+Model for contrasts between the groups at each points A or B
+```{r}
+# Count samples within the 4 groupings
+metadata_pca %>% 
+  group_by(bwcat, visit) %>%
+  count()
+
+# Make fit 
+group <- factor(c(rep("LBW_A",26), rep("LBW_B",23), rep("NBW_A",22), rep("NBW_B",21)))
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)
+fit <- lmFit(lipidomicsdata_pca, design)
+```
+
+
+# 2. Fit model: paired
+Model for contrasts between the time points A or B
+```{r}
+metadata_pca_order <- metadata_pca %>% 
+  arrange(bwcat, `NAFLD status`, visit) %>% 
+  mutate(bwcat_visit = paste(bwcat, visit, sep = "_"))
+
+# factor the group column
+metadata_pca_order$bwcat_visit <- factor(metadata_pca_order$bwcat_visit)
+
+# design
+design_paired <- model.matrix(~ 0 + bwcat_visit + id, data=metadata_pca_order)
+fit_paired <- lmFit(lipidomicsdata_pca, design_paired)
+```
+### A1: Visit (A): LBW_A vs NBW_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_A_LBWvsNBW <- makeContrasts(LBW_A-NBW_A,levels=design)
+fit2_A_LBWvsNBW <- contrasts.fit(fit, cont_A_LBWvsNBW)
+fit3_A_LBWvsNBW <- eBayes(fit2_A_LBWvsNBW)
+
+metTbl_A_LBWvsNBW <- topTable(fit3_A_LBWvsNBW, n=279, adjust.method = "fdr")
+metTbl_A_LBWvsNBW
+```
+
+Direction of abundance (up or down) for significantly DE lipids
+```{r}
+metTbl_A_LBWvsNBW$topDE <- "Not significant"
+metTbl_A_LBWvsNBW$topDE[metTbl_A_LBWvsNBW$logFC > 0 & metTbl_A_LBWvsNBW$P.Value < 0.05] <- "Up"
+metTbl_A_LBWvsNBW$topDE[metTbl_A_LBWvsNBW$logFC < -0 & metTbl_A_LBWvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_A_LBWvsNBW$DElabel <- NA
+metTbl_A_LBWvsNBW$DElabel[metTbl_A_LBWvsNBW$topDE != "Not significant"] <- rownames(metTbl_A_LBWvsNBW)[metTbl_A_LBWvsNBW$topDE != "Not significant"]
+```
+
+#### Volcano plot
+```{r}
+volcano_A_LBWvsNBW <- ggplot(data=metTbl_A_LBWvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE,label=DElabel)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Baseline (visit A): LBW vs. NBW", color = "Regulation") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  xlim(-1,1) +
+  ylim(-0,3) +
+  theme_classic() +
+  theme(legend.position = "bottom") 
+
+volcano_A_LBWvsNBW
+
+ggsave(paste(path, "results/02_volcano_A1_A_LBWvsNBW_lipidomics.png", sep="/"), plot = volcano_A_LBWvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_A_LBWvsNBW_keep <- metTbl_A_LBWvsNBW$P.Value < 0.05
+metTbl_A_LBWvsNBW_filtered <- metTbl_A_LBWvsNBW[metTbl_A_LBWvsNBW_keep,]
+metTbl_A_LBWvsNBW_filtered
+```
+
+
+
+### A2: Visit (B): LBW_B vs NBW_B
+```{r}
+# Make contrast: The difference between the groups in response to overfeeding 
+cont_B_LBWvsNBW <- makeContrasts(LBW_B-NBW_B,levels=design)
+fit2_B_LBWvsNBW <- contrasts.fit(fit, cont_B_LBWvsNBW)
+fit3_B_LBWvsNBW <- eBayes(fit2_B_LBWvsNBW)
+
+metTbl_B_LBWvsNBW <- topTable(fit3_B_LBWvsNBW, n=279, adjust.method = "fdr")
+metTbl_B_LBWvsNBW
+```
+
+Direction of abundance (up or down) for significantly DE lipids
+```{r}
+metTbl_B_LBWvsNBW$topDE <- "Not significant"
+metTbl_B_LBWvsNBW$topDE[metTbl_B_LBWvsNBW$logFC > 0 & metTbl_B_LBWvsNBW$P.Value < 0.05] <- "Up"
+metTbl_B_LBWvsNBW$topDE[metTbl_B_LBWvsNBW$logFC < -0 & metTbl_B_LBWvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_B_LBWvsNBW$DElabel <- NA
+metTbl_B_LBWvsNBW$DElabel[metTbl_B_LBWvsNBW$topDE != "Not significant"] <- rownames(metTbl_B_LBWvsNBW)[metTbl_B_LBWvsNBW$topDE != "Not significant"]
+```
+
+
+#### Volcano Plot
+```{r}
+volcano_B_LBWvsNBW <- ggplot(data=metTbl_B_LBWvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE,label=DElabel)) + 
+   geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Overfeeding (visit B): LBW vs. NBW", color = "Regulation") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+  xlim(-1.5,1.5) +
+  ylim(-0,3.4) +
+  theme_classic() +
+  theme(legend.position = "bottom") 
+
+volcano_B_LBWvsNBW
+
+ggsave(paste(path, "results/02_volcano_A2_B_LBWvsNBW_lipidomics.png", sep="/"), plot = volcano_B_LBWvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_B_LBWvsNBW_keep <- metTbl_B_LBWvsNBW$P.Value < 0.05
+metTbl_B_LBWvsNBW_filtered <- metTbl_B_LBWvsNBW[metTbl_B_LBWvsNBW_keep,]
+metTbl_B_LBWvsNBW_filtered
+```
+
+
+### A3: Bwcat (LBW): LBW_B vs LBW_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_LBW_BvsA <- makeContrasts(bwcat_visitLBW_B-bwcat_visitLBW_A,levels=design_paired)
+fit2_LBW_BvsA <- contrasts.fit(fit_paired, cont_LBW_BvsA)
+fit3_LBW_BvsA <- eBayes(fit2_LBW_BvsA)
+
+metTbl_LBW_BvsA <- topTable(fit3_LBW_BvsA, n=279, adjust.method = "fdr")
+metTbl_LBW_BvsA
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_LBW_BvsA <- rownames_to_column(metTbl_LBW_BvsA, "Lipids")
+```
+
+Direction of abundance (up or down) for significantly DE lipids
+```{r}
+metTbl_LBW_BvsA$logFCregulation <- "Not significant"
+metTbl_LBW_BvsA$logFCregulation[metTbl_LBW_BvsA$logFC > 0] <- "Up"
+metTbl_LBW_BvsA$logFCregulation[metTbl_LBW_BvsA$logFC < -0] <- "Down"
+
+metTbl_LBW_BvsA$topDE <- "Not significant"
+metTbl_LBW_BvsA$topDE[metTbl_LBW_BvsA$logFC > 0 & metTbl_LBW_BvsA$adj.P.Val < 0.05] <- "Up"
+metTbl_LBW_BvsA$topDE[metTbl_LBW_BvsA$logFC < -0 & metTbl_LBW_BvsA$adj.P.Val < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_LBW_BvsA$DElabel <- NA
+metTbl_LBW_BvsA$DElabel[metTbl_LBW_BvsA$topDE != "Not significant"] <- metTbl_LBW_BvsA$Lipids[metTbl_LBW_BvsA$topDE != "Not significant"]
+
+metTbl_LBW_BvsA_annotate <- left_join(x = as_tibble(metTbl_LBW_BvsA), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/03_A3_LBW_visitBvsA_lipidomics_imputed.csv", sep="/")) 
+```
+
+
+#### Volcano Plot
+```{r}
+desired_order <- c("Up", "Down", "Not significant")
+volcano_LBW_BvsA <- ggplot(data=metTbl_LBW_BvsA, aes(x=logFC, y=-log10(adj.P.Val), color=topDE)) + 
+  
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom", text = element_text(size = 22)) +
+  #geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-1.3,1.3) +
+  ylim(-0,3.5) + 
+  labs(x = 'Log2 Fold Change', y = "-log10(FDR)", color = "Regulation", title = "LBW")
+
+volcano_LBW_BvsA
+
+ggsave(paste(path, "results/02_volcano_A3_LBW_BvsA_lipidomics.png", sep="/"), plot = volcano_LBW_BvsA, device = "png", width = 7.5, height = 7.5)
+
+# TIFF file
+tiff(file = paste(path, "results/02_volcano_A3_LBW_BvsA_lipidomics.tiff", sep="/"), units="in", width=7.5, height=7.7, res=600, pointsize = 0.0001)
+print(volcano_LBW_BvsA)
+dev.off()
+```
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_LBW_BvsA_keep <- metTbl_LBW_BvsA$adj.P.Val < 0.05
+metTbl_LBW_BvsA_filtered <- metTbl_LBW_BvsA[metTbl_LBW_BvsA_keep,] %>% 
+  select(Lipids, logFC, P.Value, adj.P.Val, topDE)
+metTbl_LBW_BvsA_filtered
+```
+
+
+### A4: Bwcat (NBW): NBW_B vs NBW_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_NBW_BvsA <- makeContrasts(bwcat_visitNBW_B-bwcat_visitNBW_A,levels=design_paired)
+fit2_NBW_BvsA <- contrasts.fit(fit_paired, cont_NBW_BvsA)
+fit3_NBW_BvsA <- eBayes(fit2_NBW_BvsA)
+
+metTbl_NBW_BvsA <- topTable(fit3_NBW_BvsA, n=279, adjust.method = "fdr")
+metTbl_NBW_BvsA
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_NBW_BvsA <- rownames_to_column(metTbl_NBW_BvsA, "Lipids")
+```
+
+Direction of abundance (up or down) for significantly DE lipids
+```{r}
+metTbl_NBW_BvsA$logFCregulation <- "Not significant"
+metTbl_NBW_BvsA$logFCregulation[metTbl_NBW_BvsA$logFC > 0] <- "Up"
+metTbl_NBW_BvsA$logFCregulation[metTbl_NBW_BvsA$logFC < -0] <- "Down"
+
+metTbl_NBW_BvsA$topDE <- "Not significant"
+metTbl_NBW_BvsA$topDE[metTbl_NBW_BvsA$logFC > 0 & metTbl_NBW_BvsA$adj.P.Val < 0.05] <- "Up"
+metTbl_NBW_BvsA$topDE[metTbl_NBW_BvsA$logFC < -0 & metTbl_NBW_BvsA$adj.P.Val < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_NBW_BvsA$DElabel <- NA
+metTbl_NBW_BvsA$DElabel[metTbl_NBW_BvsA$topDE != "Not significant"] <- metTbl_NBW_BvsA$Lipids[metTbl_NBW_BvsA$topDE != "Not significant"]
+
+metTbl_NBW_BvsA_annotate <- left_join(x = as_tibble(metTbl_NBW_BvsA), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/03_A4_NBW_visitBvsA_lipidomics_imputed.csv", sep="/")) 
+```
+
+
+#### Volcano plot
+```{r}
+volcano_NBW_BvsA <- ggplot(data=metTbl_NBW_BvsA, aes(x=logFC, y=-log10(adj.P.Val), color=topDE,label=DElabel)) + 
+
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom", text = element_text(size = 22)) +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-1.3,1.3) +
+  ylim(-0,3.5) +
+  labs(x = 'Log2 Fold Change', y = "-log10(FDR)",color = "Regulation", title = "NBW")
+
+volcano_NBW_BvsA
+
+ggsave(paste(path, "results/02_volcano_A4_NBW_BvsA_lipidomics.png", sep="/"), plot = volcano_NBW_BvsA, device = "png", width = 7.5, height = 7.5)
+
+# TIFF file
+tiff(file = paste(path, "results/02_volcano_A4_NBW_BvsA_lipidomics.tiff", sep="/"), units="in", width=7.5, height=7.7, res=600, pointsize = 0.0001)
+print(volcano_NBW_BvsA)
+dev.off()
+```
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_NBW_BvsA_keep <- metTbl_NBW_BvsA$P.Value < 0.05
+metTbl_NBW_BvsA_filtered <- metTbl_NBW_BvsA[metTbl_NBW_BvsA_keep,] %>% 
+  select(Lipids, logFC, P.Value, adj.P.Val, topDE)
+metTbl_NBW_BvsA_filtered
+```
+
+
+### A5: Delta contrast LBW(AB) vs. NBW(AB)
+```{r}
+# Make contrast: The difference between the groups in response to overfeeding 
+cont_deltaAB_LBWvsNBW <- makeContrasts((bwcat_visitLBW_B-bwcat_visitLBW_A)-(bwcat_visitNBW_B-bwcat_visitNBW_A),levels=design_paired)
+fit2_deltaAB_LBWvsNBW <- contrasts.fit(fit_paired, cont_deltaAB_LBWvsNBW)
+fit3_deltaAB_LBWvsNBW <- eBayes(fit2_deltaAB_LBWvsNBW)
+
+metTbl_deltaAB_LBWvsNBW <- topTable(fit3_deltaAB_LBWvsNBW, n=279, adjust.method = "fdr")
+metTbl_deltaAB_LBWvsNBW
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_deltaAB_LBWvsNBW <- rownames_to_column(metTbl_deltaAB_LBWvsNBW, "Lipids")
+metTbl_deltaAB_LBWvsNBW_annotate <- left_join(x = as_tibble(metTbl_deltaAB_LBWvsNBW), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/02_A5_deltaAB_LBWvsNBW_lipidomics_imputed.csv", sep="/")) 
+```
+
+Direction of abundance (up or down) for significantly DE lipids
+```{r}
+metTbl_deltaAB_LBWvsNBW$topDE <- "Not significant"
+metTbl_deltaAB_LBWvsNBW$topDE[metTbl_deltaAB_LBWvsNBW$logFC > 0 & metTbl_deltaAB_LBWvsNBW$P.Value < 0.05] <- "Up"
+metTbl_deltaAB_LBWvsNBW$topDE[metTbl_deltaAB_LBWvsNBW$logFC < 0 & metTbl_deltaAB_LBWvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_deltaAB_LBWvsNBW$DElabel <- NA
+metTbl_deltaAB_LBWvsNBW$DElabel[metTbl_deltaAB_LBWvsNBW$topDE != "Not significant"] <- metTbl_deltaAB_LBWvsNBW$Lipids[metTbl_deltaAB_LBWvsNBW$topDE != "Not significant"]
+```
+
+#### Volcano Plot
+```{r}
+volcano_delta_visitAB_NBWvsLBW <- ggplot(data=metTbl_deltaAB_LBWvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE,label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-1.3,1.3) +
+  ylim(-0,2.3) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "Delta changes: LBW vs NBW") 
+volcano_delta_visitAB_NBWvsLBW
+
+ggsave(paste(path, "results/02_volcano_A5_delta_visitAB_NBWvsLBW_lipidomics.png", sep="/"), plot = volcano_delta_visitAB_NBWvsLBW, device = "png", width = 5.5, height = 5)
+```
+
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_deltaAB_LBWvsNBW_keep <- metTbl_deltaAB_LBWvsNBW$P.Value < 0.05
+metTbl_deltaAB_LBWvsNBW_filtered <- metTbl_deltaAB_LBWvsNBW[metTbl_deltaAB_LBWvsNBW_keep,] %>% select(Lipids, logFC, P.Value, adj.P.Val, topDE)
+metTbl_deltaAB_LBWvsNBW_filtered
+```
+
+
+#### Boxplot: Significantly DE lipids 
+```{r}
+# List of bile acids
+siglipids_fdr <- metTbl_deltaAB_LBWvsNBW_filtered %>%
+  filter(P.Value < 0.05) %>% 
+  select(Lipids) 
+
+siglipids_fdr <- as.list(siglipids_fdr)
+
+# Create a list to store the plots
+plot_list <- list()
+
+# Loop over significant bile acids to create plots and store them in the list
+for (i in 1:length(siglipids_fdr$Lipids)) {
+  variable <- siglipids_fdr$Lipids[i]
+  title <- siglipids_fdr$Lipids[i]
+  
+  p <- combined_df %>%
+    ggplot(aes(x = bwcat_visit, y = !!sym(variable), fill = bwcat)) + 
+    geom_boxplot(outlier.shape = 1, alpha = 0.4) +
+    scale_fill_manual(values = c("LBW" = "yellow", "NBW" = "forestgreen")) +
+    geom_jitter(position = position_jitter(width = 0.2), alpha = 0.5) +
+    theme_classic() +
+    theme(legend.position = "right", axis.text.x = element_text(angle = 90, hjust = 1)) +
+    labs(title = title) +
+    ylab("Conc. (log2-scaled values)") +
+    xlab("Birth Weight Groups")
+  
+  plot_list[[i]] <- p
+}
+
+
+# Combine the plots using the cowplot package
+combined_plots_1 <- plot_grid(plotlist = plot_list[1:4])
+combined_plots_1
+
+combined_plots_2to5 <- plot_grid(plotlist = plot_list[5:8])
+combined_plots_2to5
+
+combined_plots_6to9 <- plot_grid(plotlist = plot_list[9:12])
+combined_plots_6to9
+
+combined_plots_10to13 <- plot_grid(plotlist = plot_list[13:16])
+combined_plots_10to13
+
+
+# Save the combined plots as an image
+#ggsave("combined_plots.png", combined_plots, width = 10, height = 8)
+```
+
+
+
+# * Subgroup Analyses: NAFLD
+
+## PCA
+Create PCA object
+```{r}
+# Prepare data format of metabolomic data 
+y_nafld <- lipidomicsdata_visitAB_nafld %>%
+  t() %>% 
+  as.data.frame()
+colnames(y_nafld) <- y_nafld[1, ]
+lipidomicsdata_pca_nafld <- y_nafld %>% 
+  filter(Sample_004_LBW_A_FALSE != "Sample_004_LBW_A_FALSE") %>% #stupid way of removing first row and making it the column header..
+  mutate_all(., as.numeric)
+
+# Prepare data format of clinical data 
+x_nafld <- clinicaldata_selected %>%
+  arrange(bwcat,NAFLD, visit,id, ) %>% 
+  mutate(sample_id = paste("Sample", .$id, .$bwcat, .$visit, .$NAFLD, sep = "_"),
+         bwcat_nafld_visit = paste(.$bwcat, .$NAFLD, .$visit, sep = "_")) 
+metadata_pca_nafld <- x_nafld %>% 
+  select(everything(), -sample_id) %>% 
+  as.data.frame()
+rownames(metadata_pca_nafld) <- x_nafld$sample_id
+metadata_pca_nafld
+
+clinicaldata_selected %>% 
+  group_by(bwcat, NAFLD, visit) %>%
+  count()
+
+pca_object_nafld <- pca(lipidomicsdata_pca_nafld, metadata = as.data.frame(metadata_pca_nafld), removeVar = 0.1)
+```
+
+#### Biplot 1: nafld, visit
+```{r}
+biplot_loadings_bwcat_visitAB_nafld <- biplot(pca_object_nafld, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'NAFLD', shape = 'visit', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings", 
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-35,40), ylim = c(-20, 20))
+biplot_loadings_bwcat_visitAB_nafld
+
+ggsave(paste(path, "results/02_PCAbiplot_bwcatnafld1_visitAB_nafld_lipidomics.png", sep="/"), plot = biplot_loadings_bwcat_visitAB_nafld, device = "png", width = 10, height = 6)
+```
+
+
+#### Biplot 2: nafld, visit
+```{r}
+biplot_loadings_bwcat_visitAB_nafld <- biplot(pca_object_nafld, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'bwcat_nafld_visit', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings", 
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-60,60), ylim = c(-20, 20))
+biplot_loadings_bwcat_visitAB_nafld
+
+ggsave(paste(path, "results/02_PCAbiplot_bwcatnafld2_visitAB_nafld_lipidomics.png", sep="/"), plot = biplot_loadings_bwcat_visitAB_nafld, device = "png", width = 10, height = 6)
+```
+
+
+
+# 1. Fit model: unpaired
+Model for contrasts between the groups at each points A or B
+```{r}
+# Count samples within the 4 groupings
+metadata_pca_nafld %>% 
+  group_by(bwcat, NAFLD, visit) %>%
+  count()
+
+metadata_pca_nafld_order <- metadata_pca_nafld %>% 
+  mutate(bwcat_nafld_visit_ = case_when(bwcat_nafld_visit == "LBW_FALSE_A" ~ "LBW_woNAFLD_A",
+                                        bwcat_nafld_visit == "LBW_TRUE_A" ~ "LBW_wNAFLD_A",
+                                        bwcat_nafld_visit == "LBW_FALSE_B" ~ "LBW_woNAFLD_B",
+                                        bwcat_nafld_visit == "LBW_TRUE_B" ~ "LBW_wNAFLD_B",
+                                        bwcat_nafld_visit == "NBW_FALSE_A" ~ "NBW_woNAFLD_A",
+                                        bwcat_nafld_visit == "NBW_FALSE_B" ~ "NBW_woNAFLD_B")) %>% 
+  mutate(sample_id = paste("Sample", .$id, .$bwcat_nafld_visit_, sep="_")) %>% 
+  arrange(bwcat, NAFLD, visit) 
+
+# factor the group column
+metadata_pca_nafld_order$bwcat_nafld_visit_ <- factor(metadata_pca_nafld_order$bwcat_nafld_visit_)
+
+design_nafld <- model.matrix(~ 0 + bwcat_nafld_visit_ + BMI, data=metadata_pca_nafld_order)
+colnames(design_nafld) <- c("LBWwNAFLD_A", "LBWwNAFLD_B", "LBWwoNAFLD_A", "LBWwoNAFLD_B", "NBWwoNAFLD_A", "NBWwoNAFLD_B", "BMI")
+fit <- lmFit(lipidomicsdata_pca_nafld, design_nafld)
+```
+
+# 2. Fit model: paired
+Model for contrasts between the time points A or B
+```{r}
+design_nafld_paired <- model.matrix(~ 0 + bwcat_nafld_visit_ + BMI + id, data=metadata_pca_nafld_order)
+fit_nafld_paired <- lmFit(lipidomicsdata_pca_nafld, design_nafld_paired)
+```
+
+### A6: Visit (A): LBWwoNAFLD_A vs NBW_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_A_LBWwoNAFLDvsNBW <- makeContrasts(LBWwoNAFLD_A-NBWwoNAFLD_A,levels=design_nafld)
+fit2_A_LBWwoNAFLDvsNBW <- contrasts.fit(fit, cont_A_LBWwoNAFLDvsNBW)
+fit3_A_LBWwoNAFLDvsNBW <- eBayes(fit2_A_LBWwoNAFLDvsNBW)
+```
+
+```{r}
+metTbl_A_LBWwoNAFLDvsNBW <- topTable(fit3_A_LBWwoNAFLDvsNBW, n=279, adjust.method = "fdr")
+metTbl_A_LBWwoNAFLDvsNBW
+```
+
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_A_LBWwoNAFLDvsNBW$topDE <- "Not significant"
+metTbl_A_LBWwoNAFLDvsNBW$topDE[metTbl_A_LBWwoNAFLDvsNBW$logFC > 0 & metTbl_A_LBWwoNAFLDvsNBW$P.Value < 0.05] <- "Up"
+metTbl_A_LBWwoNAFLDvsNBW$topDE[metTbl_A_LBWwoNAFLDvsNBW$logFC < -0 & metTbl_A_LBWwoNAFLDvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_A_LBWwoNAFLDvsNBW$DElabel <- NA
+metTbl_A_LBWwoNAFLDvsNBW$DElabel[metTbl_A_LBWwoNAFLDvsNBW$topDE != "Not significant"] <- rownames(metTbl_A_LBWwoNAFLDvsNBW)[metTbl_A_LBWwoNAFLDvsNBW$topDE != "Not significant"]
+```
+
+
+#### Volcano Plot
+```{r}
+volcano_A_LBWwoNAFLDvsNBW <- ggplot(data=metTbl_A_LBWwoNAFLDvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE, label=DElabel)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2 Fold Change', title = "Baseline (visit A): LBWwoNAFLD vs. NBW") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-1.5,1.5) +
+  ylim(-0,3) +
+  theme_classic()
+
+volcano_A_LBWwoNAFLDvsNBW
+
+ggsave(paste(path, "results/02_volcano_A6_A_LBWwoNAFLDvsNBW_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_A_LBWwoNAFLDvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_A_LBWwoNAFLDvsNBW_keep <- metTbl_A_LBWwoNAFLDvsNBW$P.Value < 0.05
+metTbl_A_LBWwoNAFLDvsNBW_filtered <- metTbl_A_LBWwoNAFLDvsNBW[metTbl_A_LBWwoNAFLDvsNBW_keep,] %>% select(logFC, P.Value,adj.P.Val, topDE)
+metTbl_A_LBWwoNAFLDvsNBW_filtered
+```
+
+
+
+### A7: Visit (A): LBWwNAFLD_A vs NBW_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_A_LBWwNAFLDvsNBW <- makeContrasts(LBWwNAFLD_A-NBWwoNAFLD_A,levels=design_nafld)
+fit2_A_LBWwNAFLDvsNBW <- contrasts.fit(fit, cont_A_LBWwNAFLDvsNBW)
+fit3_A_LBWwNAFLDvsNBW <- eBayes(fit2_A_LBWwNAFLDvsNBW)
+
+metTbl_A_LBWwNAFLDvsNBW <- topTable(fit3_A_LBWwNAFLDvsNBW, n=279, adjust.method = "fdr")
+metTbl_A_LBWwNAFLDvsNBW
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_A_LBWwNAFLDvsNBW$topDE <- "Not significant"
+metTbl_A_LBWwNAFLDvsNBW$topDE[metTbl_A_LBWwNAFLDvsNBW$logFC > 0 & metTbl_A_LBWwNAFLDvsNBW$P.Value < 0.05] <- "Up"
+metTbl_A_LBWwNAFLDvsNBW$topDE[metTbl_A_LBWwNAFLDvsNBW$logFC < -0 & metTbl_A_LBWwNAFLDvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_A_LBWwNAFLDvsNBW$DElabel <- NA
+metTbl_A_LBWwNAFLDvsNBW$DElabel[metTbl_A_LBWwNAFLDvsNBW$topDE != "Not significant"] <- rownames(metTbl_A_LBWwNAFLDvsNBW)[metTbl_A_LBWwNAFLDvsNBW$topDE != "Not significant"]
+```
+
+#### Volcano Plot
+```{r}
+volcano_A_LBWwNAFLDvsNBW<- ggplot(data=metTbl_A_LBWwNAFLDvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE, label=DElabel)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2 Fold Change', title = "Baseline (visit A): LBWwNAFLD vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+  # xlim(-1.5,1.5) +
+ # ylim(-0,3) +
+  theme_classic()
+
+volcano_A_LBWwNAFLDvsNBW
+
+ggsave(paste(path, "results/02_volcano_A7_A_LBWwNAFLDvsNBW_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_A_LBWwNAFLDvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_A_LBWwNAFLDvsNBW_keep <- metTbl_A_LBWwNAFLDvsNBW$P.Value < 0.05
+metTbl_A_LBWwNAFLDvsNBW_filtered <- metTbl_A_LBWwNAFLDvsNBW[metTbl_A_LBWwNAFLDvsNBW_keep,] %>% select(logFC, P.Value,adj.P.Val, topDE)
+metTbl_A_LBWwNAFLDvsNBW_filtered
+```
+
+
+
+### A8: Visit (B): LBWwoNAFLD_B vs NBW_B
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_B_LBWwoNAFLDvsNBW <- makeContrasts(LBWwoNAFLD_B-NBWwoNAFLD_B,levels=design_nafld)
+fit2_B_LBWwoNAFLDvsNBW <- contrasts.fit(fit, cont_B_LBWwoNAFLDvsNBW)
+fit3_B_LBWwoNAFLDvsNBW <- eBayes(fit2_B_LBWwoNAFLDvsNBW)
+
+metTbl_B_LBWwoNAFLDvsNBW <- topTable(fit3_B_LBWwoNAFLDvsNBW, n=279, adjust.method = "fdr")
+metTbl_B_LBWwoNAFLDvsNBW
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_B_LBWwoNAFLDvsNBW$topDE <- "Not significant"
+metTbl_B_LBWwoNAFLDvsNBW$topDE[metTbl_B_LBWwoNAFLDvsNBW$logFC > 0 & metTbl_B_LBWwoNAFLDvsNBW$P.Value < 0.05] <- "Up"
+metTbl_B_LBWwoNAFLDvsNBW$topDE[metTbl_B_LBWwoNAFLDvsNBW$logFC < -0 & metTbl_B_LBWwoNAFLDvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_B_LBWwoNAFLDvsNBW$DElabel <- NA
+metTbl_B_LBWwoNAFLDvsNBW$DElabel[metTbl_B_LBWwoNAFLDvsNBW$topDE != "Not significant"] <- rownames(metTbl_B_LBWwoNAFLDvsNBW)[metTbl_B_LBWwoNAFLDvsNBW$topDE != "Not significant"]
+```
+
+
+#### Volcano Plot
+```{r}
+volcano_B_LBWwoNAFLDvsNBW <- ggplot(data=metTbl_B_LBWwoNAFLDvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE, label=DElabel)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2 Fold Change', title = "Overfeeding (visit B): LBWwoNAFLD vs. NBW") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-1.5,1.5) +
+  ylim(-0,3) +
+  theme_classic()
+
+volcano_B_LBWwoNAFLDvsNBW
+
+ggsave(paste(path, "results/02_volcano_A8_B_LBWwoNAFLDvsNBW_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_B_LBWwoNAFLDvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_B_LBWwoNAFLDvsNBW_keep <- metTbl_B_LBWwoNAFLDvsNBW$P.Value < 0.05
+metTbl_B_LBWwoNAFLDvsNBW_filtered <- metTbl_B_LBWwoNAFLDvsNBW[metTbl_B_LBWwoNAFLDvsNBW_keep,] %>% select(logFC, P.Value,adj.P.Val, topDE)
+metTbl_B_LBWwoNAFLDvsNBW_filtered
+```
+
+
+
+### A9: Visit (B): LBWwNAFLD_B vs NBW_B
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_B_LBWwNAFLDvsNBW <- makeContrasts(LBWwNAFLD_B-NBWwoNAFLD_B,levels=design_nafld)
+fit2_B_LBWwNAFLDvsNBW <- contrasts.fit(fit, cont_B_LBWwNAFLDvsNBW)
+fit3_B_LBWwNAFLDvsNBW <- eBayes(fit2_B_LBWwNAFLDvsNBW)
+
+metTbl_B_LBWwNAFLDvsNBW <- topTable(fit3_B_LBWwNAFLDvsNBW, n=279, adjust.method = "fdr")
+metTbl_B_LBWwNAFLDvsNBW
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_B_LBWwNAFLDvsNBW$topDE <- "Not significant"
+metTbl_B_LBWwNAFLDvsNBW$topDE[metTbl_B_LBWwNAFLDvsNBW$logFC > 0 & metTbl_B_LBWwNAFLDvsNBW$P.Value < 0.05] <- "Up"
+metTbl_B_LBWwNAFLDvsNBW$topDE[metTbl_B_LBWwNAFLDvsNBW$logFC < -0 & metTbl_B_LBWwNAFLDvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_B_LBWwNAFLDvsNBW$DElabel <- NA
+metTbl_B_LBWwNAFLDvsNBW$DElabel[metTbl_B_LBWwNAFLDvsNBW$topDE != "Not significant"] <- rownames(metTbl_B_LBWwNAFLDvsNBW)[metTbl_B_LBWwNAFLDvsNBW$topDE != "Not significant"]
+```
+
+
+#### Volcano Plot
+```{r}
+volcano_B_LBWwNAFLDvsNBW <- ggplot(data=metTbl_B_LBWwNAFLDvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE, label=DElabel)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Overfeeding (visit B): LBWwNAFLD vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+    xlim(-1.5,1.5) +
+  ylim(-0,3) +
+  theme_classic()
+
+volcano_B_LBWwNAFLDvsNBW
+
+ggsave(paste(path, "results/02_volcano_A9_B_LBWwNAFLDvsNBW_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_B_LBWwNAFLDvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_B_LBWwNAFLDvsNBW_keep <- metTbl_B_LBWwNAFLDvsNBW$P.Value < 0.05
+metTbl_B_LBWwNAFLDvsNBW_filtered <- metTbl_B_LBWwNAFLDvsNBW[metTbl_B_LBWwNAFLDvsNBW_keep,] %>% select(logFC, P.Value,adj.P.Val, topDE)
+metTbl_B_LBWwNAFLDvsNBW_filtered
+```
+
+### A10: Bwcat_woNAFLD (LBWwoNAFLD): LBWwoNAFLD_B vs LBWwoNAFLD_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_LBWwoNAFLD_BvsA <- makeContrasts(bwcat_nafld_visit_LBW_woNAFLD_B-bwcat_nafld_visit_LBW_woNAFLD_A,levels=design_nafld_paired)
+fit2_LBWwoNAFLD_BvsA <- contrasts.fit(fit_nafld_paired, cont_LBWwoNAFLD_BvsA)
+fit3_LBWwoNAFLD_BvsA <- eBayes(fit2_LBWwoNAFLD_BvsA)
+
+metTbl_LBWwoNAFLD_BvsA <- topTable(fit3_LBWwoNAFLD_BvsA, n=279, adjust.method = "fdr")
+metTbl_LBWwoNAFLD_BvsA
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_LBWwoNAFLD_BvsA <- rownames_to_column(metTbl_LBWwoNAFLD_BvsA, "Lipids")
+metTbl_LBWwoNAFLD_BvsA_annotate <- left_join(x = as_tibble(metTbl_LBWwoNAFLD_BvsA), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/03_A10_LBWwoNAFLD_BvsA_lipidomics_imputed.csv", sep="/")) 
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_LBWwoNAFLD_BvsA$topDE <- "Not significant"
+metTbl_LBWwoNAFLD_BvsA$topDE[metTbl_LBWwoNAFLD_BvsA$logFC > 0 & metTbl_LBWwoNAFLD_BvsA$P.Value < 0.05] <- "Up"
+metTbl_LBWwoNAFLD_BvsA$topDE[metTbl_LBWwoNAFLD_BvsA$logFC < -0 & metTbl_LBWwoNAFLD_BvsA$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_LBWwoNAFLD_BvsA$DElabel <- NA
+metTbl_LBWwoNAFLD_BvsA$DElabel[metTbl_LBWwoNAFLD_BvsA$topDE != "Not significant"] <- metTbl_LBWwoNAFLD_BvsA$Lipids[metTbl_LBWwoNAFLD_BvsA$topDE != "Not significant"]
+```
+
+#### Volcano Plot
+```{r}
+desired_order <- c("Up", "Down", "Not significant")
+volcano_LBWwoNAFLD_BvsA <- ggplot(data=metTbl_LBWwoNAFLD_BvsA, aes(x=logFC, y=-log10(adj.P.Val), color=topDE)) + 
+
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom", text = element_text(size = 22)) +
+#  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-1.3,1.3) +
+  ylim(-0,3.5) +
+  labs(x = 'Log2 Fold Change',  y = "-log10(FDR)",color = "Regulation", title = "LBW w/o NAFLD") 
+
+volcano_LBWwoNAFLD_BvsA
+
+ggsave(paste(path, "results/02_volcano_A10_LBWwoNAFLD_BvsA_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_LBWwoNAFLD_BvsA, device = "png", width = 7.5, height = 7.5)
+
+# TIFF file
+tiff(file = paste(path, "results/02_volcano_A10_LBWwoNAFLD_BvsA_lipidomics_BMIadjusted.tiff", sep="/"), units="in", width=7.5, height=7.7, res=600, pointsize = 0.0001)
+print(volcano_LBWwoNAFLD_BvsA)
+dev.off()
+```
+
+
+#### Significantly DE metabolites
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_LBWwoNAFLD_BvsA_keep <- metTbl_LBWwoNAFLD_BvsA$adj.P.Val < 0.05
+metTbl_LBWwoNAFLD_BvsA_filtered <- metTbl_LBWwoNAFLD_BvsA[metTbl_LBWwoNAFLD_BvsA_keep,] %>% select(Lipids ,logFC, P.Value,adj.P.Val, topDE)
+metTbl_LBWwoNAFLD_BvsA_filtered
+```
+
+
+### A11: Bwcat_wNAFLD (LBWwNAFLD): LBWwNAFLD_B vs LBWwNAFLD_A
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_LBWwNAFLD_BvsA <- makeContrasts(bwcat_nafld_visit_LBW_wNAFLD_B-bwcat_nafld_visit_LBW_wNAFLD_A,levels=design_nafld_paired)
+fit2_LBWwNAFLD_BvsA <- contrasts.fit(fit_nafld_paired, cont_LBWwNAFLD_BvsA)
+fit3_LBWwNAFLD_BvsA <- eBayes(fit2_LBWwNAFLD_BvsA)
+
+metTbl_LBWwNAFLD_BvsA <- topTable(fit3_LBWwNAFLD_BvsA, n=279, adjust.method = "fdr")
+metTbl_LBWwNAFLD_BvsA
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_LBWwNAFLD_BvsA <- rownames_to_column(metTbl_LBWwNAFLD_BvsA, "Lipids")
+metTbl_LBWwNAFLD_BvsA_annotate <- left_join(x = as_tibble(metTbl_LBWwNAFLD_BvsA), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/03_A11_LBWwNAFLD_BvsA_lipidomics_imputed.csv", sep="/"))  
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_LBWwNAFLD_BvsA$topDE <- "Not significant"
+metTbl_LBWwNAFLD_BvsA$topDE[metTbl_LBWwNAFLD_BvsA$logFC > 0 & metTbl_LBWwNAFLD_BvsA$adj.P.Val < 0.05] <- "Up"
+metTbl_LBWwNAFLD_BvsA$topDE[metTbl_LBWwNAFLD_BvsA$logFC < -0 & metTbl_LBWwNAFLD_BvsA$adj.P.Val < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_LBWwNAFLD_BvsA$DElabel <- NA
+metTbl_LBWwNAFLD_BvsA$DElabel[metTbl_LBWwNAFLD_BvsA$topDE != "Not significant"] <- metTbl_LBWwNAFLD_BvsA$Lipids[metTbl_LBWwNAFLD_BvsA$topDE != "Not significant"]
+```
+
+
+#### Volcano plot
+```{r}
+volcano_LBWwNAFLD_BvsA <- ggplot(data=metTbl_LBWwNAFLD_BvsA, aes(x=logFC, y=-log10(adj.P.Val), color=topDE,label=DElabel)) + 
+
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom", text = element_text(size = 22)) +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-1.3,1.3) +
+  ylim(-0,3.5) +
+  labs(x = 'Log2 Fold Change', y="-log10(FDR)", color = "Regulation", title = "LBW w/ NAFLD") 
+
+volcano_LBWwNAFLD_BvsA
+
+ggsave(paste(path, "results/02_volcano_A11_LBWwNAFLD_BvsA_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_LBWwNAFLD_BvsA, device = "png", width = 7.5, height = 7.5)
+
+# TIFF file
+tiff(file = paste(path, "results/02_volcano_A11_LBWwNAFLD_BvsA_lipidomics_BMIadjusted.tiff", sep="/"), units="in", width=7.5, height=7.7, res=600, pointsize = 0.0001)
+print(volcano_LBWwNAFLD_BvsA)
+dev.off()
+```
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_LBWwNAFLD_BvsA_keep <- metTbl_LBWwNAFLD_BvsA$P.Value < 0.05
+metTbl_LBWwNAFLD_BvsA_filtered <- metTbl_LBWwNAFLD_BvsA[metTbl_LBWwNAFLD_BvsA_keep,] %>% select(Lipids, logFC, P.Value,adj.P.Val, topDE)
+metTbl_LBWwNAFLD_BvsA_filtered 
+
+```
+
+
+### A12: Delta contrast LBWwoNAFLD(AB) vs. NBW(AB)
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_deltaAB_LBWwoNAFLDvsNBW <- makeContrasts((bwcat_nafld_visit_LBW_woNAFLD_B-bwcat_nafld_visit_LBW_woNAFLD_A)-(bwcat_nafld_visit_NBW_woNAFLD_B-bwcat_nafld_visit_NBW_woNAFLD_A),levels=design_nafld_paired)
+fit2_deltaAB_LBWwoNAFLDvsNBW <- contrasts.fit(fit_nafld_paired, cont_deltaAB_LBWwoNAFLDvsNBW)
+fit3_deltaAB_LBWwoNAFLDvsNBW <- eBayes(fit2_deltaAB_LBWwoNAFLDvsNBW)
+
+metTbl_deltaAB_LBWwoNAFLDvsNBW <- topTable(fit3_deltaAB_LBWwoNAFLDvsNBW, n=279, adjust.method = "fdr")
+metTbl_deltaAB_LBWwoNAFLDvsNBW
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_deltaAB_LBWwoNAFLDvsNBW <- rownames_to_column(metTbl_deltaAB_LBWwoNAFLDvsNBW, "Lipids")
+metTbl_deltaAB_LBWwoNAFLDvsNBW_annotate <- left_join(x = as_tibble(metTbl_deltaAB_LBWwoNAFLDvsNBW), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/02_A12_deltaAB_LBWwoNAFLDvsNBW_lipidomics_imputed.csv", sep="/"))
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_deltaAB_LBWwoNAFLDvsNBW$topDE <- "Not significant"
+metTbl_deltaAB_LBWwoNAFLDvsNBW$topDE[metTbl_deltaAB_LBWwoNAFLDvsNBW$logFC > 0 & metTbl_deltaAB_LBWwoNAFLDvsNBW$P.Value < 0.05] <- "Up"
+metTbl_deltaAB_LBWwoNAFLDvsNBW$topDE[metTbl_deltaAB_LBWwoNAFLDvsNBW$logFC < 0 & metTbl_deltaAB_LBWwoNAFLDvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_deltaAB_LBWwoNAFLDvsNBW$DElabel <- NA
+metTbl_deltaAB_LBWwoNAFLDvsNBW$DElabel[metTbl_deltaAB_LBWwoNAFLDvsNBW$topDE != "Not significant"] <- metTbl_deltaAB_LBWwoNAFLDvsNBW$Lipids[metTbl_deltaAB_LBWwoNAFLDvsNBW$topDE != "Not significant"]
+```
+
+#### Volcano Plot
+```{r}
+volcano_deltaAB_LBWwoNAFLDvsNBW <- ggplot(data=metTbl_deltaAB_LBWwoNAFLDvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE,label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-2.2,2.2) +
+  ylim(-0,3) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "Delta changes: LBW w/o NAFLD vs NBW") 
+
+volcano_deltaAB_LBWwoNAFLDvsNBW
+
+ggsave(paste(path, "results/02_volcano_A12_delta_visitAB_NBWvsLBWwoNAFLD_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_deltaAB_LBWwoNAFLDvsNBW, device = "png", width = 7.5, height = 5)
+```
+
+
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_deltaAB_LBWwoNAFLDvsNBW_keep <- metTbl_deltaAB_LBWwoNAFLDvsNBW$P.Value < 0.05
+metTbl_deltaAB_LBWwoNAFLDvsNBW_filtered <- metTbl_deltaAB_LBWwoNAFLDvsNBW[metTbl_deltaAB_LBWwoNAFLDvsNBW_keep,] %>% select(Lipids, logFC, P.Value, adj.P.Val, topDE)
+metTbl_deltaAB_LBWwoNAFLDvsNBW_filtered
+```
+
+
+### A13: Delta contrast LBWwNAFLD(AB) vs. NBW(AB)
+```{r}
+# Make contrast: The difference between the groupsin response to overfeeding 
+cont_deltaAB_LBWwNAFLDvsNBW <- makeContrasts((bwcat_nafld_visit_LBW_wNAFLD_B-bwcat_nafld_visit_LBW_wNAFLD_A)-(bwcat_nafld_visit_NBW_woNAFLD_B-bwcat_nafld_visit_NBW_woNAFLD_A),levels=design_nafld_paired)
+fit2_deltaAB_LBWwNAFLDvsNBW <- contrasts.fit(fit_nafld_paired, cont_deltaAB_LBWwNAFLDvsNBW)
+fit3_deltaAB_LBWwNAFLDvsNBW <- eBayes(fit2_deltaAB_LBWwNAFLDvsNBW)
+
+metTbl_deltaAB_LBWwNAFLDvsNBW <- topTable(fit3_deltaAB_LBWwNAFLDvsNBW, n=279, adjust.method = "fdr")
+metTbl_deltaAB_LBWwNAFLDvsNBW
+
+# For pathway analysis in IPA: Add ID's from KEGG, HMDB, PubChem and CheBI to top lipids
+metTbl_deltaAB_LBWwNAFLDvsNBW <- rownames_to_column(metTbl_deltaAB_LBWwNAFLDvsNBW, "Lipids")
+metTbl_deltaAB_LBWwNAFLDvsNBW_annotate <- left_join(x = as_tibble(metTbl_deltaAB_LBWwNAFLDvsNBW), 
+                                      y = as_tibble(lipid_database), 
+                                      by = c("Lipids" = "Lipid"))  %>%
+  write_csv(paste(path, "data/02_A13_deltaAB_LBWwNAFLDvsNBW_lipidomics_imputed.csv", sep="/"))
+```
+
+Direction of abundance (up or down) for significantly DE metabolites.
+```{r}
+metTbl_deltaAB_LBWwNAFLDvsNBW$topDE <- "Not significant"
+metTbl_deltaAB_LBWwNAFLDvsNBW$topDE[metTbl_deltaAB_LBWwNAFLDvsNBW$logFC > 0 & metTbl_deltaAB_LBWwNAFLDvsNBW$P.Value < 0.05] <- "Up"
+metTbl_deltaAB_LBWwNAFLDvsNBW$topDE[metTbl_deltaAB_LBWwNAFLDvsNBW$logFC < 0 & metTbl_deltaAB_LBWwNAFLDvsNBW$P.Value < 0.05] <- "Down"
+
+# Add the significant lipids to the plot
+metTbl_deltaAB_LBWwNAFLDvsNBW$DElabel <- NA
+metTbl_deltaAB_LBWwNAFLDvsNBW$DElabel[metTbl_deltaAB_LBWwNAFLDvsNBW$topDE != "Not significant"] <- metTbl_deltaAB_LBWwNAFLDvsNBW$Lipids[metTbl_deltaAB_LBWwNAFLDvsNBW$topDE != "Not significant"]
+```
+
+
+#### Volcano Plot
+```{r}
+volcano_deltaAB_LBWwNAFLDvsNBW <- ggplot(data=metTbl_deltaAB_LBWwNAFLDvsNBW, aes(x=logFC, y=-log10(P.Value), color=topDE,label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-2.2,2.2) +
+  ylim(-0,3) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "Delta changes: LBW w/ NAFLD vs NBW") 
+
+volcano_deltaAB_LBWwNAFLDvsNBW
+
+ggsave(paste(path, "results/02_volcano_A13_delta_visitAB_NBWvsLBWwNAFLD_lipidomics_BMIadjusted.png", sep="/"), plot = volcano_deltaAB_LBWwNAFLDvsNBW, device = "png", width = 5.5, height = 5)
+```
+
+
+#### Significantly DE lipids
+FDR adjusted P-values<0.05 are considered to be DE.
+```{r}
+metTbl_deltaAB_LBWwNAFLDvsNBW_keep <- metTbl_deltaAB_LBWwNAFLDvsNBW$P.Value < 0.05
+metTbl_deltaAB_LBWwNAFLDvsNBW_filtered <- metTbl_deltaAB_LBWwNAFLDvsNBW[metTbl_deltaAB_LBWwNAFLDvsNBW_keep,] %>% select(Lipids, logFC, P.Value, adj.P.Val, topDE)
+metTbl_deltaAB_LBWwNAFLDvsNBW_filtered
+```
+
+
+
+# Heatmaps for paper
+```{r}
+A5_toplip <- metTbl_deltaAB_LBWvsNBW_filtered %>% 
+  mutate(comparison = "A5_deltaAB_LBWvsNBW") %>% 
+  select(Lipids, comparison, logFC, P.Value, adj.P.Val, topDE) %>% 
+  rename(Regulation = topDE) %>% 
+  arrange(Lipids) %>% 
+  pivot_wider(
+    id_cols = Lipids,
+    names_from = comparison,
+    values_from = logFC
+  )
+
+# Create a list of data frames (x) and a list of names (y)
+x <- list(metTbl_LBW_BvsA, 
+          metTbl_NBW_BvsA, 
+          metTbl_LBWwoNAFLD_BvsA, 
+          metTbl_LBWwNAFLD_BvsA)
+
+y <- list("A3_LBW_BvsA", "A4_NBW_BvsA", "A10_LBWwoNAFLD_BvsA", "A11_LBWwNAFLD_BvsA") 
+
+result_list <- list()
+
+# Loop over the data frames in x and characters in y
+for (i in seq_along(x)) {
+  result <- x[[i]] %>%
+    mutate(comparison = y[[i]]) %>%
+    select(Lipids, comparison, logFC, P.Value, adj.P.Val, topDE) %>%
+    arrange(P.Value) %>%
+    pivot_wider(
+      id_cols = Lipids,
+      names_from = comparison,
+      values_from = c(logFC, adj.P.Val)
+    )
+  
+  # Name the result data frame after y[i]
+  result_name <- y[[i]]
+  result_list[[result_name]] <- result
+}
+
+# Combine the individual data frames into one table
+combined_df_toplip <- result_list[[1]] 
+for (i in 2:length(result_list)) {
+  combined_df_toplip <- left_join(combined_df_toplip, result_list[[i]], by = "Lipids")
+}
+
+toplip_combined_df <- A5_toplip %>% 
+  left_join(combined_df_toplip, by = join_by(Lipids)) %>% 
+  select(everything(), -c(Lipids, A5_deltaAB_LBWvsNBW)) %>% 
+  as.data.frame()
+rownames(toplip_combined_df) <- A5_toplip$Lipids
+toplip_combined_df
+
+toplip_combined_df %>%
+  select(contains("adj.P.Val"))
+```
+
+
+
+
+
+```{r}
+toplip_combined_df_logfc <- toplip_combined_df %>% 
+  select(contains("logFC")) %>% 
+  select(logFC_A4_NBW_BvsA, logFC_A3_LBW_BvsA, logFC_A10_LBWwoNAFLD_BvsA, logFC_A11_LBWwNAFLD_BvsA)
+
+
+heatmap_obj <- Heatmap(toplip_combined_df_logfc, 
+                       col = colorRamp2(c(min(toplip_combined_df_logfc), 0,
+                                          max(toplip_combined_df_logfc)), 
+                                        c("#283A90", "white", "#BE2625")),
+                       name = "Log2 \nFold Changes",
+                       cluster_rows = FALSE,  # To prevent row clustering
+                       column_names_side = "top",
+                       row_names_side = "left",
+                       show_column_names = TRUE,  # To show column names
+                       column_names_rot = 0,
+                       column_names_centered = TRUE,
+                       column_labels = c("NBW", "LBW All","LBW w/o NAFLD", "LBW w/ NAFLD"),
+                       show_row_names = TRUE, # To show row names
+                       cluster_columns = FALSE,
+                       column_names_gp = gpar(fontsize = 8),
+                       row_names_gp = gpar(fontsize = 9), 
+                       show_heatmap_legend = TRUE
+                       ) 
+
+heatmap_obj
+
+# Save the heatmap as a PDF file
+tiff(file = paste(path, "results/03_heatmap_deltalipids_A3_A4_A10_A11_lipidomics.tiff", sep="/"),
+    width = 14,
+    height = 15,
+    units = "cm",
+    res = 600)
+
+print(heatmap_obj)
+dev.off()
+```
+
+
+```{r}
+# Create a list of data frames (x) and a list of names (y)
+x <- list(metTbl_deltaAB_LBWvsNBW_filtered, #p-val < 0.05 lipids
+          metTbl_LBW_BvsA_filtered, #FDR < 0.05 lipids
+          metTbl_NBW_BvsA_filtered, #p-val < 0.05 lipids
+          metTbl_LBWwoNAFLD_BvsA_filtered, #FDR < 0.05 lipids
+          metTbl_LBWwNAFLD_BvsA_filtered) #p-val < 0.05 lipids
+y <- list("A5_delta_LBWvsNBW",
+          "A3_LBW_BvsA", 
+          "A4_NBW_BvsA", 
+          "A10_LBWwoNAFLD_BvsA", 
+          "A11_LBWwNAFLD_BvsA")
+
+combined_df_toplipids <- bind_rows(
+  map2(x, y, ~mutate(.x, comparison = .y)),
+  .id = "source"  # Add a column to identify the source of each row
+)
+
+combined_df_toplipids <- combined_df_toplipids %>% 
+  mutate(logFC=round(logFC, digits = 4), P.Value=round(P.Value, digits = 4), adj.P.Val=round(adj.P.Val, digits = 4)) %>% 
+  write_tsv(paste(path, "data/02_toplipids_A5A3A4A10A11_lipidomics.tsv", sep="/")) 
+```
+
+
+# Fishers exact test
+```{r}
+# Create a 2x2 contingency table
+fishers_table <- matrix(c(21, 258, 0, 279), nrow = 2)
+
+# Print the observed table
+print("Observed Contingency Table:")
+print(fishers_table)
+
+# Perform Fisher's exact test
+fisher_result <- fisher.test(fishers_table)
+
+# Print the results
+print("Fisher's Exact Test Results:")
+print(fisher_result)
+
+# Extract the p-value from the results
+p_value <- fisher_result$p.value
+print(paste("P-value:", p_value))
+```
+
+
