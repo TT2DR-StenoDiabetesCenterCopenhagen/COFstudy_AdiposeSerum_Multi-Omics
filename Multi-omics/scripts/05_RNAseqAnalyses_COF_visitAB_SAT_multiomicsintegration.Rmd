@@ -2,7 +2,7 @@
 title: "Multi-omics COF study"
 subtitle: "Multi-omics analsysis and differential gene expressions on samples from the subcutaneous adipose tissue (SAT) from visit A and B (LBW vs NBW)"
 author: "Sofie Olund Villumsen"
-date: "11/01/2024"
+date: "2024"
 output: html_document
 ---
 
@@ -20,14 +20,14 @@ library(tidyverse)
 
 Set wd
 ```{r setup}
-path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics/"
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Multi-omics/"
 
 knitr::opts_knit$set(root.dir = path)
 ```
 
 Load data
 ```{r}
-logcpm_values <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics/data/03_transcriptomicsdata_visitAB_logcpm_values.csv")
+logcpm_values <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Transcriptomics/data/03_transcriptomicsdata_visitAB_logcpm_values.csv")
 ```
 
 

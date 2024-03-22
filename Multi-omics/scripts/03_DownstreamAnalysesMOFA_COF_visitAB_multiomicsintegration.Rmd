@@ -2,7 +2,7 @@
 title: "Multi-Omics Integration Analysis"
 subtitle: "Downstream multi-Omics Data Integration Analyses w/ MOFA2"
 author: "Sofie Olund Villumsen"
-date: "14/06/2023"
+date: "2023"
 output: 
   html_document:
     toc: true
@@ -25,7 +25,7 @@ library(ggside)
 
 Set wd
 ```{r setup}
-path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics"
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Multi-omics"
 
 knitr::opts_knit$set(root.dir = path)
 ```
@@ -636,7 +636,3 @@ heatmap_rho
 
 For further info see: 
 https://raw.githack.com/bioFAM/MOFA2_tutorials/master/R_tutorials/downstream_analysis.html 
-
-
-
-

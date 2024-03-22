@@ -2,7 +2,7 @@
 title: "Multi-omics overfeeding Analysis"
 subtitle: "Pathway analysis"
 author: "Sofie Olund Villumsen"
-date: "29/11/2023"
+date: "2023"
 output: 
   html_document:
     toc: true
@@ -26,7 +26,7 @@ library(webshot)
 
 Set wd
 ```{r setup}
-path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics/"
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_omics_adiposetissue/Multi-omics/"
 
 knitr::opts_knit$set(root.dir = path)
 ```
