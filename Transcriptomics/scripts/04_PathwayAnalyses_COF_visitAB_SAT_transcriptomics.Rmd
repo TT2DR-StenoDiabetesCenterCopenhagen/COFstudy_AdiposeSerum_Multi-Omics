@@ -1,0 +1,662 @@
+---
+title: "Transcriptomics COF study"
+subtitle: "Pathway analysis"
+author: "Sofie Olund Villumsen"
+date: "2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Initial settings
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE, warning=FALSE}
+library(ggsankey)
+library(networkD3)
+library(RColorBrewer)
+library(tidyverse)
+library(webshot)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+enricher_lbw <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A3_LBW_BvsA_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table_paired.txt", sep = "/"))
+
+enricher_nbw <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A4_NBW_BvsA_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table_paired.txt", sep = "/"))
+
+enricher_delta <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A5_deltachanges_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table.txt", sep = "/"))
+
+enricher_lbwwoNAFLD <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A10_LBWwoNAFLD_BvsA_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table_paired.txt", sep = "/"))
+
+enricher_lbwwNAFLD <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A11_LBWwNAFLD_BvsA_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table_paired.txt", sep = "/"))
+
+enricher_deltaLBWwoNAFLDvsNBW <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A12_deltachanges_LBWwoNAFLDvsNBW_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table.txt", sep = "/"))
+
+enricher_deltaLBWwNAFLDvsNBW <- read_tsv(paste(path, "pathway_analysis/Enricher_output/04_A13_deltachanges_LBWwNAFLDvsNBW_SAT_RNAseq_proteincoding_Pathway_Reactome_2022_table.txt", sep = "/"))
+```
+
+# A3: LBW
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_lbw <- enricher_lbw %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Term, Genes, `Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_lbw
+```
+
+
+Nodes: LBW
+```{r}
+# Genes unique
+df_lbw_unique_genes <- sankeydf_enricher_lbw %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_lbw_unique_pathways <- sankeydf_enricher_lbw %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_lbw <- bind_rows(df_lbw_unique_genes, df_lbw_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_lbw
+```
+
+Edges: LBW
+```{r}
+edges_lbw <- sankeydf_enricher_lbw %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_lbw, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_lbw, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_lbw
+```
+
+Create sankey plot: LBW
+```{r}
+# Create the network graph
+network_lbw <- sankeyNetwork(
+  Links = edges_lbw,
+  Nodes = nodes_lbw,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_lbw
+
+# Save file paths
+savesankey_html_lbw <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A3_LBW_BvsA_proteincoding_SAT_rnaseq.html", sep = "/")
+savesankey_jpeg_lbw <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A3_LBW_BvsA_proteincoding_SAT_rnaseq.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_lbw, savesankey_html_lbw)
+
+# Save network as png
+webshot(savesankey_html_lbw, savesankey_jpeg_lbw, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+
+
+
+# A4: NBW
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_nbw <- enricher_nbw %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Term, Genes,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_nbw
+```
+
+Nodes: NBW
+```{r}
+# Genes unique
+df_nbw_unique_genes <- sankeydf_enricher_nbw %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_nbw_unique_pathways <- sankeydf_enricher_nbw %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_nbw <- bind_rows(df_nbw_unique_genes, df_nbw_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_nbw
+```
+
+
+Edges: NBW
+```{r}
+edges_nbw <- sankeydf_enricher_nbw %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_nbw, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_nbw, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_nbw
+```
+
+
+Create the sankey plot: NBW
+```{r}
+# Create the network graph
+network_nbw <- sankeyNetwork(
+  Links = edges_nbw,
+  Nodes = nodes_nbw,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  fontSize = 70,
+  nodeWidth = 40,
+  LinkGroup = "gene_type", # hash out to color nodes
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_nbw
+
+# Save file paths
+savesankey_html_nbw <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A4_NBW_BvsA_proteincoding_SAT_rnaseq.html", sep = "/")
+savesankey_jpeg_nbw <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A4_NBW_BvsA_proteincoding_SAT_rnaseq.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_nbw, savesankey_html_nbw)
+
+# Save network as png
+webshot(savesankey_html_nbw, savesankey_jpeg_nbw, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+
+
+# A5: Delta
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_delta <- enricher_delta %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Term, Genes,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_delta
+```
+
+
+Nodes: LBW
+```{r}
+# Genes unique
+df_delta_unique_genes <- sankeydf_enricher_delta %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_delta_unique_pathways <- sankeydf_enricher_delta %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_delta <- bind_rows(df_delta_unique_genes, df_delta_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_delta
+```
+
+Edges: LBW
+```{r}
+edges_delta <- sankeydf_enricher_delta %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_delta, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_delta, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_delta
+```
+
+Create sankey plot: LBW
+```{r}
+# Create the network graph
+network_delta <- sankeyNetwork(
+  Links = edges_delta,
+  Nodes = nodes_delta,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_delta
+
+# Save file paths
+savesankey_html_delta <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A5_deltachanges_proteincoding_SAT_rnaseq.html", sep = "/")
+savesankey_jpeg_delta <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A5_deltachanges_proteincoding_SAT_rnaseq.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_delta, savesankey_html_delta)
+
+# Save network as png
+webshot(savesankey_html_delta, savesankey_jpeg_delta, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+
+# A5: Delta 2
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_delta2 <- enricher_delta %>%
+  filter(`Adjusted P-value` < 0.05,
+         Term == c("Metabolism Of Steroids R-HSA-8957322", "Muscle Contraction R-HSA-397014")) %>% 
+  select(Term, Genes,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_delta2
+```
+
+
+Nodes: LBW
+```{r}
+# Genes unique
+df_delta_unique_genes2 <- sankeydf_enricher_delta2 %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_delta_unique_pathways2 <- sankeydf_enricher_delta2 %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_delta2 <- bind_rows(df_delta_unique_genes2, df_delta_unique_pathways2) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_delta2
+```
+
+Edges: LBW
+```{r}
+edges_delta2 <- sankeydf_enricher_delta2 %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_delta2, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_delta2, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_delta2
+```
+
+Create sankey plot: LBW
+```{r}
+# Create the network graph
+network_delta2 <- sankeyNetwork(
+  Links = edges_delta2,
+  Nodes = nodes_delta2,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_delta2
+
+# Save file paths
+savesankey_html_delta2 <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A5_deltachanges_proteincoding_SAT_rnaseq_2.html", sep = "/")
+savesankey_jpeg_delta2 <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A5_deltachanges_proteincoding_SAT_rnaseq_2.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_delta2, savesankey_html_delta2)
+
+# Save network as png
+webshot(savesankey_html_delta2, savesankey_jpeg_delta2, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+
+
+# A10: LBWwoNAFLD
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_lbwwoNAFLD <- enricher_lbwwoNAFLD %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Term, Genes,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_lbwwoNAFLD
+```
+
+
+Nodes: LBWwoNAFLD
+```{r}
+# Genes unique
+df_lbwwoNAFLD_unique_genes <- sankeydf_enricher_lbwwoNAFLD %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_lbwwoNAFLD_unique_pathways <- sankeydf_enricher_lbwwoNAFLD %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_lbwwoNAFLD <- bind_rows(df_lbwwoNAFLD_unique_genes, df_lbwwoNAFLD_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_lbwwoNAFLD
+```
+
+Edges: LBWwoNAFLD
+```{r}
+edges_lbwwoNAFLD <- sankeydf_enricher_lbwwoNAFLD %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_lbwwoNAFLD, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_lbwwoNAFLD, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_lbwwoNAFLD
+```
+
+Create sankey plot: LBWwoNAFLD
+```{r}
+# Create the network graph
+network_lbwwoNAFLD <- sankeyNetwork(
+  Links = edges_lbwwoNAFLD,
+  Nodes = nodes_lbwwoNAFLD,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_lbwwoNAFLD
+
+# Save file paths
+savesankey_html_lbwwoNAFLD <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A10_LBWwoNAFLD_BvsA_proteincoding_SAT_rnaseq.html", sep = "/")
+savesankey_jpeg_lbwwoNAFLD <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A10_LBWwoNAFLD_BvsA_proteincoding_SAT_rnaseq.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_lbwwoNAFLD, savesankey_html_lbwwoNAFLD)
+
+# Save network as png
+webshot(savesankey_html_lbwwoNAFLD, savesankey_jpeg_lbwwoNAFLD, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+
+
+# A11: LBWwNAFLD
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_lbwwNAFLD <- enricher_lbwwNAFLD %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Term, Genes,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_lbwwNAFLD
+```
+
+
+Nodes: LBWwNAFLD
+```{r}
+# Genes unique
+df_lbwwNAFLD_unique_genes <- sankeydf_enricher_lbwwNAFLD %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_lbwwNAFLD_unique_pathways <- sankeydf_enricher_lbwwNAFLD %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_lbwwNAFLD <- bind_rows(df_lbwwNAFLD_unique_genes, df_lbwwNAFLD_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_lbwwNAFLD
+```
+
+Edges: LBWwNAFLD
+```{r}
+edges_lbwwNAFLD <- sankeydf_enricher_lbwwNAFLD %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_lbwwNAFLD, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_lbwwNAFLD, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_lbwwNAFLD
+```
+
+Create sankey plot: LBWwNAFLD
+```{r}
+# Create the network graph
+network_lbwwNAFLD <- sankeyNetwork(
+  Links = edges_lbwwNAFLD,
+  Nodes = nodes_lbwwNAFLD,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_lbwwNAFLD
+
+# Save file paths
+savesankey_html_lbwwNAFLD <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A11_LBWwNAFLD_BvsA_proteincoding_SAT_rnaseq.html", sep = "/")
+savesankey_jpeg_lbwwNAFLD <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A11_LBWwNAFLD_BvsA_proteincoding_SAT_rnaseq.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_lbwwNAFLD, savesankey_html_lbwwNAFLD)
+
+# Save network as png
+webshot(savesankey_html_lbwwNAFLD, savesankey_jpeg_lbwwNAFLD, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+
+
+# A12: Delta: LBW w/o NAFLD vs NBW
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_deltaLBWwoNAFLDvsNBW <- enricher_deltaLBWwoNAFLDvsNBW %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Term, Genes,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_deltaLBWwoNAFLDvsNBW
+```
+
+
+Nodes: LBW
+```{r}
+# Genes unique
+df_deltaLBWwoNAFLDvsNBW_unique_genes <- sankeydf_enricher_deltaLBWwoNAFLDvsNBW %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_deltaLBWwoNAFLDvsNBW_unique_pathways <- sankeydf_enricher_deltaLBWwoNAFLDvsNBW %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_deltaLBWwoNAFLDvsNBW <- bind_rows(df_deltaLBWwoNAFLDvsNBW_unique_genes, df_deltaLBWwoNAFLDvsNBW_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_deltaLBWwoNAFLDvsNBW
+```
+
+Edges: LBW
+```{r}
+edges_deltaLBWwoNAFLDvsNBW <- sankeydf_enricher_deltaLBWwoNAFLDvsNBW %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_deltaLBWwoNAFLDvsNBW, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_deltaLBWwoNAFLDvsNBW, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_deltaLBWwoNAFLDvsNBW
+```
+
+Create sankey plot: LBW
+```{r}
+# Create the network graph
+network_deltaLBWwoNAFLDvsNBW <- sankeyNetwork(
+  Links = edges_deltaLBWwoNAFLDvsNBW,
+  Nodes = nodes_deltaLBWwoNAFLDvsNBW,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);"),
+  iterations = 0
+)
+
+network_deltaLBWwoNAFLDvsNBW
+
+# Save file paths
+savesankey_html_deltaLBWwoNAFLDvsNBW <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A12_deltachanges_proteincoding_SAT_rnaseq.html", sep = "/")
+savesankey_jpeg_deltaLBWwoNAFLDvsNBW <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_topgenes_pathways_A12_deltachanges_proteincoding_SAT_rnaseq.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_deltaLBWwoNAFLDvsNBW, savesankey_html_deltaLBWwoNAFLDvsNBW)
+
+# Save network as png
+webshot(savesankey_html_deltaLBWwoNAFLDvsNBW, savesankey_jpeg_deltaLBWwoNAFLDvsNBW, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000) 
+```
+
+
+# A13: Delta: LBW w/ NAFLD vs NBW
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_deltaLBWwNAFLDvsNBW <- enricher_deltaLBWwNAFLDvsNBW %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Genes, Term,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_deltaLBWwNAFLDvsNBW
+```
+
+No significant overlaps after FDR adjustment
+
+

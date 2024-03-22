@@ -1,0 +1,134 @@
+---
+title: "Transcriptomics COF study"
+subtitle: "Arrange and tidy data"
+author: "Sofie Olund Villumsen"
+date: "2023"
+output: html_document
+---
+
+# Initial settings
+Clear workspace
+```{r}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE} 
+library(impute) # Impute with KNN
+library(tidyverse)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics/"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+genecountsdata_all  <- read_csv(paste(path, "data/01_genecounts_all.csv", sep="/"))
+satdata_all         <- read_csv(paste(path, "data/01_adiposetissue_phenodata.csv", sep="/"))
+satdata_isodag      <- read_csv(paste(path, "data/01_adiposetissue_phenodata_isoleringsdato.csv", sep="/"))
+clinicaldata_all    <- read_csv(paste(path, "data/01_clinical_data.csv", sep="/"))
+```
+
+
+# Clinical data wrangling
+Impute, log transform and scale clinical data
+```{r}
+clinicaldata_selected <- clinicaldata_all %>% 
+  filter(visit %in% c("A","B")) %>% 
+  arrange(bwcat, NAFLD, visit) %>% 
+  mutate(bwcat_binary = case_when(bwcat == "NBW" ~ 0,
+                                  bwcat == "LBW" ~ 1),
+         visit_binary = case_when(visit == "A" ~ 0,
+                                  visit == "B" ~ 1),
+         NAFLD_binary = case_when(NAFLD == "FALSE" ~ 0,
+                                  NAFLD == "TRUE" ~ 1)) %>% 
+  select(c("id","bwcat_binary", "visit_binary", "height_day1", "weight_day1", "bmi_day1", "leanmass_total", "fatmass_total", "vat_mass", "bas_glu","bas_cpe","bas_ins", "homa_ir", "cholesterol_day2","ldl_day2","hdl_day2", "triglyc_day2", "liverfatpercent", "asat_day2","alat_day2","ggt_day2", "NAFLD_binary", "bw"))
+
+# Change names so they make sense in the figure
+clin_colnames <- c("id", "Birth weight category", "Visit","Height","Weight","BMI", "Total lean mass","Total fat mass","VAT mass", "F-glucose","F-C-peptide","F-insulin", "HOMA-IR", "Total cholesterol","LDL cholesterol","HDL cholesterol", "F-triglyceride", "Hepatic fat", "ASAT","ALAT","GGT", "NAFLD status", "Birth weight - NAFLD status")
+
+colnames(clinicaldata_selected) <- clin_colnames
+```
+
+
+Identify missing values
+```{r}
+table(is.na(clinicaldata_selected))
+```
+
+## Impute data 
+using k-nearest neighbor
+```{r}
+# Convert data frame from numeric to factor
+clinicaldata_selected_ <- clinicaldata_selected[1:23]
+
+# Set random seed 
+if(exists(".Random.seed")) rm(.Random.seed)
+    
+# Impute with KNN function
+clinicaldata_selected_imputed <- impute.knn(as.matrix(clinicaldata_selected_)) 
+
+clinicaldata_selected_imputed <- as_tibble(clinicaldata_selected_imputed$data) %>% 
+  mutate(across(.cols = 1:23, as.numeric)) %>% 
+  mutate(bwcat = case_when(`Birth weight category` == 0 ~ "NBW",
+                           `Birth weight category` == 1 ~ "LBW"),
+         visit = case_when(Visit == 0 ~ "A",
+                           Visit == 1 ~ "B"),
+         NAFLD = case_when(`NAFLD status` == 0 ~ "FALSE",
+                           `NAFLD status` == 1 ~ "TRUE")) %>% 
+  mutate(id = as.character(id)) %>% 
+  mutate(id = case_when(nchar(id) == 1 ~ as.character(paste0("00", id)), 
+                        nchar(id) == 2 ~ as.character(paste0("0", id))))
+
+clinicaldata_selected_imputed <- clinicaldata_selected_imputed %>% 
+  mutate(sample_id = paste("Sample", .$id, .$bwcat, .$visit, sep="_")) 
+
+clinicaldata_selected_imputed %>%
+  select(sample_id, everything()) %>% 
+  write_csv(paste(path, "data/02_clinicaldata_selected_imputed.csv", sep="/")) 
+```
+
+
+
+# Tidy data
+## Clincal data and SAT data
+```{r}
+# Combine dataframes "satdata_all" and "satdata_isodag"
+metadata_sat <- satdata_all %>%  
+  rename(visit = 'Visit',
+         person_id = 'ID',
+         bwcat = 'BW') %>%
+  mutate(BGI_ID = sub("^", "Sample_", .$BGI_ID )) %>% 
+  left_join(., satdata_isodag,  by = c("visit" = "Visit", "person_id" = "ID")) %>% # this filter out id=066 from visit B, as this visit doesn't have any metadata 
+  select(person_id, visit, bwcat, batch_id, RIN, BGI_ID) 
+metadata_sat
+
+# Combine dataframes "clinicaldata_all" and "metadata_sat"
+metadata_clin_sat <- metadata_sat %>% 
+  left_join(., clinicaldata_selected_imputed,  by = c("visit" = "visit", "person_id" = "id")) %>% 
+  arrange(bwcat.x, NAFLD, visit, person_id) %>% 
+  filter(visit != "C")
+metadata_clin_sat
+
+# Save df
+metadata_clin_sat %>% 
+  write_csv(paste(path, "data/02_metadata_sat_visitAB.csv", sep="/")) 
+```
+
+
+## Genecounts data
+next up filter all SAT samples from the genecounts matrix
+```{r}
+genecounts_visitAB <- genecountsdata_all %>% 
+  select(Geneid, metadata_clin_sat$BGI_ID) 
+
+colnames(genecounts_visitAB)[2:ncol(genecounts_visitAB)]<- metadata_clin_sat$sample_id
+
+# Save df
+genecounts_visitAB %>% 
+  write_csv(paste(path, "data/02_genecounts_sat_visitAB.csv", sep="/")) 
+```

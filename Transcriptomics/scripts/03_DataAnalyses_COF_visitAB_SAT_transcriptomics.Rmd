@@ -1,0 +1,2529 @@
+---
+title: "Transcriptomics COF study"
+subtitle: "Exploratory data analsysis and differential gene expression analysis on samples from the subcutaneous adipose tissue (SAT) from visit A and B (LBW vs NBW)"
+author: "Sofie Olund Villumsen"
+date: "2023"
+output: html_document
+---
+
+# Initial settings
+Clear workspace
+```{r}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE}
+library(cowplot)
+library(ComplexHeatmap) 
+library(colorRamp2)
+library(edgeR)
+library(ggplot2)
+library(ghibli)
+library(limma)
+library(PCAtools) 
+library(tidyverse)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+metadata_sat    <- read_csv(paste(path, "data/02_metadata_sat_visitAB.csv", sep="/")) %>% 
+  mutate(person_id = as.numeric(person_id))
+genecounts_sat  <- read_csv(paste(path, "data/02_genecounts_sat_visitAB.csv", sep="/")) %>% 
+  separate(Geneid, c("Geneid", NA))
+annotation      <- read.delim(paste(path, "data/raw_data/biomart_ensemblegenes.txt", sep="/")) %>%
+  separate(Gene.stable.ID.version, c("Gene.stable.ID", NA)) 
+```
+
+# Gene types bf. filtering
+Disribution of gene types before filtering
+```{r}
+genecounts_sat %>%   
+  left_join(., annotation,  by = c("Geneid" = "Gene.stable.ID")) %>%
+  group_by(Gene.type) %>% 
+  count() %>% 
+  arrange(-n)
+```
+
+Annotate
+```{r}
+genecounts_sat_geneID <- genecounts_sat %>%   
+  left_join(., annotation,  by = c("Geneid" = "Gene.stable.ID")) %>% 
+  unite("Geneid",Gene.name,Geneid) %>% 
+  select(Geneid, everything(), -c("Gene.type", "Gene.description")) 
+genecounts_sat_geneID
+```
+
+
+The analyses is inspired by this analyses pipeline: https://www.r-bloggers.com/2022/08/downstream-bioinformatics-analysis-of-omics-data-with-edger/#google_vignette
+
+
+ANOVA Comparisons Setup
+We will use generalized linear models (GLMs) to detect differentially expressed genes associated with the factors of our experimental design. GLMs are an extension of classical linear models to non-normally distributed response data, and are used to specify probability distributions according to their mean-variance relationship.
+
+# Main analyses: ANOVA Design (LBW, NBW)
+Levels: LBW_A LBW_B NBW_A NBW_B
+```{r}
+# Convert from df to matrix
+metadata_sat_order_matrix <- metadata_sat %>% 
+  rename(bwcat = "bwcat.x") %>% 
+  mutate(bwcat = case_when(bwcat == "LBW/NAFLD" ~ "LBW",
+                           TRUE ~ as.character(bwcat))) %>% 
+  mutate(sample_id = paste("Sample", .$person_id, .$bwcat, .$visit, sep = "_"), 
+         bwcat_visit = paste(.$bwcat, .$visit, sep = "_"),
+         bwcat_nafld_visit = paste(.$bwcat, .$NAFLD, .$visit, sep = "_"))
+
+# The metadata needs to be arranged in the same order as the samples in the genecount df
+metadata_sat_order_matrix %>% 
+  group_by(bwcat, visit) %>%
+  count()
+
+# factor the group column
+metadata_sat_order_matrix$bwcat_visit <- factor(metadata_sat_order_matrix$bwcat_visit)
+
+glm_targets <- data.frame(metadata_sat_order_matrix[,-1], row.names = metadata_sat_order_matrix$sample_id)
+glm_targets
+
+# Create an object with the groupings for our samples.
+glm_group <- factor(metadata_sat_order_matrix$bwcat_nafld_visit)
+
+# Convert from df to matrix
+genecounts_sat_order_matrix <- data.frame(genecounts_sat_geneID[,-1], row.names = genecounts_sat_geneID$Geneid)
+genecounts_sat_order_matrix
+```
+
+Use the DGEList command to create an object with the table of counts. The table of counts rows are features and columns are samples, including a group indicator for each column.
+```{r}
+dge_list <- DGEList(counts=genecounts_sat_order_matrix, group=glm_group)
+```
+
+
+# Check distribution
+### Library sizes
+If the sequencing depth is reasonably consistent across the RNA samples, then the simplest and most
+robust approach to differential ex is to use limma-trend. This approach will usually work well if the
+ratio of the largest library size to the smallest is not more than about 3-fold.
+```{r}
+# Barplot
+tiff(file = paste(path, "results/03_barplot_librarysize_visitAB_rnaseq.tiff", sep="/"), units="in", width=10, height=6, res=300, pointsize = 0.0001)
+barplot(dge_list$samples$lib.size*1e-6, names=rownames(dge_list$samples), ylab="Library size (millions)", las=2)
+dev.off()
+```
+
+### Filtering
+Use the filterByExpr command before normalization to determine which genes have sufficiently large enough counts to be retained in a statistical analysis. Thus remove rows that consistently have zero or very low counts. We are taking the minimum group size into account, which in our study is 4 (LBW w/ NAFLD before and after COF). 
+```{r}
+keep <- filterByExpr(dge_list, glm_group)  
+table(keep)
+
+glm_list_keep <- dge_list[keep, , keep.lib.sizes=FALSE]
+```
+
+## Normalization
+Use the calcNormFactors to calculate scaling factors to convert raw library sizes into effective by finding a set of scaling factors for the library sizes that minimizes the log-fold changes between the samples for most genes.
+```{r}
+glm_list <- calcNormFactors(glm_list_keep)
+```
+
+
+### Gene types after filtering and normalization
+Distribution of gene types after filtering
+```{r}
+# Gene types matrix after filtering and normalization
+filtered_count_data_tibble <- as_tibble(glm_list$counts)
+filtered_count_data_alltypes <- rownames_to_column(filtered_count_data_tibble, var = "geneid") %>% 
+  mutate(geneid = rownames(glm_list$counts)) %>% 
+  separate(geneid, c(NA, "ENS"), sep = "_") %>% 
+  left_join(., annotation,  by = c("ENS" = "Gene.stable.ID")) 
+filtered_count_data_alltypes
+
+# Count gene types after filtering
+filtered_count_data_alltypes %>% 
+  group_by(Gene.type) %>% 
+  count() %>% 
+  arrange(-n)
+```
+
+### Proteincoding genes
+```{r}
+# Protein coding genes only
+filtered_count_data_proteincoding <- filtered_count_data_alltypes %>% 
+  filter(Gene.type == "protein_coding") %>% 
+  unite("Geneid",Gene.name,ENS) %>% 
+  select(Geneid, everything(), -c("Gene.type", "Gene.description")) %>% 
+  separate(Geneid, into = c("Geneid", "ENS"), sep = "_") %>% 
+  mutate(Geneid = ifelse(Geneid == "" | duplicated(Geneid), paste0(Geneid, "_", ENS), Geneid)) %>% 
+  select(everything(), -ENS)
+filtered_count_data_proteincoding
+
+# Convert from df to matrix
+genecounts_sat_order_matrix_proteincoding <- data.frame(filtered_count_data_proteincoding[,-1], row.names = filtered_count_data_proteincoding$Geneid)
+
+# Save genecount file with protein coding genes
+genecounts_sat_order_matrix_proteincoding  %>% 
+  mutate(gene_id = rownames(.)) %>% 
+  select(gene_id, everything()) %>% 
+  write_csv(paste(path, "data/03_genecounts_sat_visitAB_proteincoding_rnaseq.csv", sep="/")) 
+
+# Save background list with names
+genecounts_sat_order_matrix_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  select(geneid) %>% 
+  write_csv(paste(path, "data/03_geneid_backgroundlist_sat_visitAB_proteincoding_rnaseq.csv", sep="/")) 
+
+# DGE list
+dge_list_proteincoding <- DGEList(counts=genecounts_sat_order_matrix_proteincoding, group=glm_group)
+glm_list_proteincoding <- calcNormFactors(dge_list_proteincoding)
+```
+
+
+Exploration Data Analyses
+### MSD plot: all
+(Multidimensional scaling) 
+
+With the filtered count data we can also create a multidimensional scaling (MDS) plot. The distances between samples in the MDS plot approximate the expression differences.
+```{r}
+# Plot colors 
+par(mfrow=c(9,3))
+for(i in names(ghibli_palettes)) print(ghibli_palette(i))
+dev.off()
+
+ghibli_colors <- ghibli_palette("PonyoMedium", type = "discrete")
+ghibli_subset <- c(ghibli_colors[3], ghibli_colors[6], ghibli_colors[4])
+
+points <- c(0,1,15,16)
+colors <- rep(c(ghibli_colors[3], ghibli_colors[6]), 2)
+par(mar=c(5.1, 4.1, 4.1, 8.1), xpd=TRUE)
+```
+
+Finally, we can create the MSD plot of the samples
+```{r}
+plotMDS(glm_list_keep, col=colors[metadata_sat_order_matrix$bwcat_visit], pch=points[metadata_sat_order_matrix$bwcat_visit])
+legend("topleft", legend=levels(metadata_sat_order_matrix$bwcat_visit), pch=points, col=colors)
+```
+
+### PCA: all
+Create PCA object
+```{r echo=FALSE, message=FALSE}
+# Prepare data format of RNA-seq data 
+filtered_count_data <- glm_list$counts
+
+metadata_sat_pca <- metadata_sat %>%  
+  separate(batch_id, into = c(NA, "batch_ID"), sep = "(?<=[A-Za-z])(?=[0-9])") %>%
+  mutate_at(c('batch_ID'), as.numeric) %>%
+  rename(bwcat = "bwcat.x") %>% 
+  mutate(bwcat = case_when(bwcat == "LBW/NAFLD" ~ "LBW",
+                           TRUE ~ as.character(bwcat))) %>%
+  select(sample_id, everything()) 
+
+
+# Prepare data format of clinical data 
+x <- metadata_sat_pca %>%
+  select(everything(), -sample_id) %>% 
+  mutate(bwcat_binary = case_when(bwcat == 'NBW' ~ 0,
+                                  bwcat == 'LBW' | bwcat == 'LBW/NAFLD' ~ 1),
+         visit_binary = case_when(visit == "A" ~ 0,
+                                  visit == "B" ~ 1),
+         bwcat_nafld_visit = paste(.$bwcat, .$NAFLD, .$visit, sep = "_"),
+         bwcat_visit = paste(.$bwcat, .$visit, sep = "_")) %>% 
+  as.data.frame()
+rownames(x) <- metadata_sat_pca$sample_id
+x
+
+pca_object <- pca(filtered_count_data, metadata = as.data.frame(x), removeVar = 0.1)
+```
+
+
+Biplot: A plot that plots both variables and observations (samples) in the same space. The variables are indicated by arrows drawn from the origin, which indicate their ‘weight’ in different directions.
+
+#### Biplot: bwcat, visit
+```{r}
+biplot_loadings_sat1 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, colby = 'bwcat', shape = 'visit',
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-1E6,1E6), ylim = c(-5E5, 7.5E5))
+biplot_loadings_sat1
+
+ggsave(paste(path, "results/03_PCAbiplot1_allgenes_bwcatvisit_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat1, device = "png", width = 10, height = 6)
+```
+
+
+#### Biplot: bwcat
+```{r}
+biplot_loadings_sat2 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'bwcat', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-1E6,1E6), ylim = c(-5E5, 7.5E5))
+biplot_loadings_sat2
+
+ggsave(paste(path, "results/03_PCAbiplot2_allgenes_bwcat_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat2, device = "png", width = 10, height = 6)
+```
+
+#### Biplot: batch_ID
+```{r}
+biplot_loadings_sat3 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'batch_ID', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    legendPosition = 'right',
+    xlim = c(-1E6,1E6), ylim = c(-5E5, 7.5E5))
+biplot_loadings_sat3
+
+ggsave(paste(path, "results/03_PCAbiplot3_allgenes_batchID_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat3, device = "png", width = 10, height = 6)
+```
+
+
+#### Biplot: RIN
+```{r}
+biplot_loadings_sat4 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, colby = 'RIN', #shape = 'bwcat', 
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    legendPosition = 'right',
+    xlim = c(-1E6,1E6), ylim = c(-5E5, 7.5E5))
+biplot_loadings_sat4
+
+ggsave(paste(path, "results/03_PCAbiplot4_allgenes_RIN_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat4, device = "png", width = 10, height = 6)
+```
+
+#### Biplot: BMI
+```{r}
+biplot_loadings_sat5 <- biplot(pca_object, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, lab = NULL, 
+    colby = 'BMI',# shape = 'bwcat',
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    legendPosition = 'right',
+    xlim = c(-1E6,1E6), ylim = c(-5E5, 7.5E5))
+biplot_loadings_sat5
+
+ggsave(paste(path, "results/03_PCAbiplot5_allgenes_BMI_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat5, device = "png", width = 10, height = 6)
+```
+
+
+
+#### Scree plot: all
+PCs explaining the variance: Check how many PC covers 80% of the variance
+```{r echo=FALSE}
+which(cumsum(pca_object$variance) > 90) [1]
+```
+
+Scree plot: all
+A plot including PCs showing the accumulative proportion of explained variation covering 90%. To determine the optimum number of PCs and to retain PCs Horn's parallel analysis is used. Based on the outcome an optimal number of PCs to proceed with is either 1. PC1 only accounts for 80% of the maximum variance in the rna-seq data set. 
+```{r warning=FALSE, echo=FALSE}
+screeplot_allgenes <- screeplot(pca_object, axisLabSize = 13, titleLabSize = 22, 
+                        hline = 90, 
+                        components = getComponents(pca_object, 1:6),
+                        vline = 6) +
+  geom_label(aes(5, 50, label = '90% explained variation', vjust = -1, size = 8))
+
+screeplot_allgenes
+ggsave(paste(path, "results/03_screeplot_allgenes_visitAB_SAT_rnaseq.png", sep="/"), plot = screeplot_allgenes, device = "png", width = 10, height = 6)
+```
+
+#### Pairsplot of PCs: all
+```{r}
+pairsplot_allgenes <- pairsplot(pca_object,
+                        components = getComponents(pca_object, c(1,2,3,4,5,6)),
+                        triangle = TRUE, 
+                        hline = 0, vline = 0,
+                        pointSize = 0.8,
+                        gridlines.major = FALSE, gridlines.minor = FALSE,
+                        colby = 'bwcat',
+                        title = 'Pairs plot', titleLabSize = 22,
+                        axisLabSize = 14, plotaxes = TRUE,
+                        margingaps = unit(c(0.1, 0.1, 0.1, 0.1), 'cm'))
+
+pairsplot
+ggsave(paste(path, "results/03_pairsplot_allgenes_visitAB_SAT_rnaseq.png", sep="/"), plot = pairsplot_allgenes, device = "png", width = 15, height = 10)
+```
+
+
+#### Loadingsplots: all
+```{r echo=FALSE, warning=FALSE}
+loadingsplot_allgenes <- plotloadings(pca_object,
+                              components = getComponents(pca_object, c(1,2,3,4,5,6)),
+                              rangeRetain = 0.1,
+                              labSize = 2.7,
+                              absolute = FALSE,
+                              title = 'Loadings plot',
+                              caption = 'Top 10% variables',
+                              shape = 23, shapeSizeRange = c(1, 16),
+                              col = c('white', 'forestgreen'),
+                              drawConnectors = FALSE)
+
+loadingsplot_allgenes
+ggsave(paste(path, "results/03_loadingsplot_allgenes_allPC_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_allgenes, device = "png", width = 25, height = 11)
+```
+
+##### PC1: all
+```{r}
+loadingsplot_pc1_allgenes <- plotloadings(pca_object,
+    components = getComponents(pca_object, c(1)),
+    rangeRetain = 0.12, absolute = TRUE,
+    col = c('black', 'green', 'forestgreen'),
+    drawConnectors = TRUE, labSize = 4) + coord_flip()
+loadingsplot_pc1_allgenes
+
+ggsave(paste(path, "results/03_loadingsplot_allgenes_PC1_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_pc1_allgenes, device = "png", width = 10, height = 6)
+```
+
+##### PC2: all
+```{r}
+loadingsplot_pc2_allgenes <- plotloadings(pca_object,
+    components = getComponents(pca_object, c(2)),
+    rangeRetain = 0.12, absolute = TRUE,
+    col = c('black', 'green', 'forestgreen'),
+    drawConnectors = TRUE, labSize = 4) + coord_flip()
+
+loadingsplot_pc2_allgenes
+ggsave(paste(path, "results/03_loadingsplot_allgenes_PC2_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_pc2_allgenes, device = "png", width = 10, height = 6)
+```
+
+##### PC4: all
+```{r}
+loadingsplot_pc4_allgenes <- plotloadings(pca_object,
+    components = getComponents(pca_object, c(4)),
+    rangeRetain = 0.12, absolute = TRUE,
+    col = c('black', 'green', 'forestgreen'),
+    drawConnectors = TRUE, labSize = 4) + coord_flip()
+
+loadingsplot_pc4_allgenes
+ggsave(paste(path, "results/03_loadingsplot_allgenes_PC4_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_pc4_allgenes, device = "png", width = 10, height = 6)
+```
+
+
+#### Eigencorr plots: all 
+Interpretation of r and r squared values: 
+* E1: Pearson's r is usually used to express the correlation between two quantities. For example let's say you want to demonstrate that the hours spend studying are correlated with the grade obtained in an exam. You could calculate Pearson's r to evaluate whether the two quantities are correlated. r values ranges from -1 to +1
+
+* E2: R^2 is usually used to evaluate the quality of fit of a model on data. It expresses what fraction of the variability of your dependent variable (Y) is explained by your independent variable (X). R^2 values ranges between 0 to +1
+
+##### E1: all
+```{r}
+tiff(file = paste(path, "results/03_eigencorplot_allgenes_PearsonsR_visitAB_SAT_rnaseq.tiff", sep="/"), units="in", width=8, height=13, res=300, pointsize = 0.0001)
+eigencorplot(pca_object,
+    components = getComponents(pca_object, 1:6),
+    metavars = c("Birth weight category","Visit","Height", "Weight","BMI","Total lean mass","Total fat mass", "VAT mass","F-glucose","F-C-peptide","F-insulin", "HOMA-IR","Total cholesterol","LDL cholesterol","HDL cholesterol", "F-triglyceride","Hepatic fat","ASAT","ALAT", "GGT","NAFLD status","Birth weight - NAFLD status"),
+    col = c('#283A90', 'white', '#BE2625'),
+    cexCorval = 1.2,
+    colCorval = 'white',
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    rotLabX = 45,
+    posColKey = 'top',
+    cexLabColKey = 1.5,
+    scale = TRUE,
+    plotRsquared = FALSE,
+    main = 'PC1-6 clinical correlations Pearsons r ',
+    corFUN = "pearson",
+    corUSE = "pairwise.complete.obs",
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+    colFrame = 'white')
+dev.off()
+```
+
+##### E2: all
+```{r}
+tiff(file = paste(path, "results/03_eigencorplot_allgenes_PearsonsR2_visitAB_SAT_rnaseq.tiff", sep="/"), units="in", width=8, height=13, res=300, pointsize = 0.0001)
+  eigencorplot(pca_object,
+    components = getComponents(pca_object, 1:6),
+    metavars = c("Birth weight category","Visit","Height", "Weight","BMI","Total lean mass","Total fat mass", "VAT mass","F-glucose","F-C-peptide","F-insulin", "HOMA-IR","Total cholesterol","LDL cholesterol","HDL cholesterol", "F-triglyceride","Hepatic fat","ASAT","ALAT", "GGT","NAFLD status","Birth weight - NAFLD status"),
+    col = c('white', 'gold', 'darkgreen'),
+    cexCorval = 1.2,
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    posColKey = 'top',
+    rotLabX = 45,
+    scale = TRUE,
+    main = bquote(PC1-6 ~ clinical ~ correlations ~ Pearson ~ r^2),
+    plotRsquared = TRUE,
+    corFUN = 'pearson',
+    corUSE = 'pairwise.complete.obs',
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1))
+dev.off()
+```
+
+
+
+
+### MSD plot: proteincoding
+```{r}
+plotMDS(glm_list_proteincoding, col=colors[metadata_sat_order_matrix$bwcat_visit], pch=points[metadata_sat_order_matrix$bwcat_visit])
+legend("topleft", legend=levels(metadata_sat_order_matrix$bwcat_visit), pch=points, col=colors)
+```
+
+### PCA: proteincoding
+```{r echo=FALSE, message=FALSE}
+# Prepare data format of RNA-seq data 
+filtered_count_data_proteincoding <- glm_list_proteincoding$counts
+
+metadata_sat_pca_proteincoding <- metadata_sat %>%  
+  separate(batch_id, into = c(NA, "batch_ID"), sep = "(?<=[A-Za-z])(?=[0-9])") %>%
+  mutate_at(c('batch_ID'), as.numeric) %>%
+  rename(bwcat = "bwcat.x") %>% 
+  mutate(bwcat = case_when(bwcat == "LBW/NAFLD" ~ "LBW",
+                           TRUE ~ as.character(bwcat))) %>% 
+  select(sample_id, everything()) 
+
+# Prepare data format of clinical data 
+x_proteincoding <- metadata_sat_pca_proteincoding %>%
+  select(everything(), -BGI_ID) %>% 
+  mutate(bwcat_binary = case_when(bwcat == 'NBW' ~ 0,
+                                  bwcat == 'LBW' | bwcat == 'LBW/NAFLD' ~ 1),
+         visit_binary = case_when(visit == "A" ~ 0,
+                                  visit == "B" ~ 1),
+         bwcat_nafld_visit = paste(.$bwcat, .$NAFLD, .$visit, sep = "_"),
+         bwcat_visit = paste(.$bwcat, .$visit, sep = "_")) %>%  
+  as.data.frame()
+rownames(x_proteincoding) <- metadata_sat_pca_proteincoding$sample_id
+x_proteincoding
+
+pca_object_proteincoding <- pca(filtered_count_data_proteincoding, metadata = as.data.frame(x_proteincoding), removeVar = 0.1)
+```
+
+
+#### Biplot: bwcat, visit: proteincoding
+```{r}
+biplot_loadings_sat_proteincoding1 <- biplot(pca_object_proteincoding, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, colby = 'bwcat', shape = 'visit', #lab = NULL,
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    #xlim = c(-9E5,9E5), ylim = c(-4E5, 9E5)
+    )
+biplot_loadings_sat_proteincoding1
+
+ggsave(paste(path, "results/03_PCAbiplot1_proteincoding_bwcatvisit_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat_proteincoding1, device = "png", width = 10, height = 6)
+```
+
+
+
+#### Biplot: bwcat, visit (4 ellipses): proteincoding
+```{r}
+biplot_loadings_sat_proteincoding2 <- biplot(pca_object_proteincoding, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, colby = 'bwcat_visit', lab = NULL,
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+   # xlim = c(-9E5,9E5), ylim = c(-4E5, 9E5)
+   )
+biplot_loadings_sat_proteincoding2
+
+ggsave(paste(path, "results/03_PCAbiplot2_proteincoding_bwcatvisit_visitAB_SAT_rnaseq.png", sep="/"), plot = biplot_loadings_sat_proteincoding2, device = "png", width = 10, height = 6)
+```
+
+
+#### Biplot: bwcat, visit (6 ellipses): proteincoding
+```{r}
+biplot_loadings_sat_proteincoding3 <- biplot(pca_object_proteincoding, showLoadings = TRUE,
+    labSize = 3, pointSize = 3, sizeLoadingsNames = 3, colby = 'bwcat_nafld_visit', lab = NULL,
+    title = "PCA biplot", subtitle = "PC scores of samples and variable loadings",
+    # ellipse config
+      ellipse = TRUE,
+      ellipseType = 't',
+      ellipseLevel = 0.95,
+      ellipseFill = FALSE,
+      ellipseAlpha = 1/4,
+      ellipseLineSize = 1.0,
+    legendPosition = 'right',
+    xlim = c(-1.5E6,2E6), ylim = c(-5E5, 5E5))
+biplot_loadings_sat_proteincoding3
+
+ggsave(paste(path, "results/03_PCAbiplot3_proteincoding_bwcatvisit_SAT_visitAB_rnaseq.png", sep="/"), plot = biplot_loadings_sat_proteincoding3, device = "png", width = 10, height = 6)
+```
+
+
+#### Scree plot: proteincoding
+PCs explaining the variance: Check how many PC covers 90% of the variance
+```{r echo=FALSE}
+which(cumsum(pca_object_proteincoding$variance) > 90) [1]
+```
+
+```{r warning=FALSE, echo=FALSE}
+screeplot_proteincoding <- screeplot(pca_object_proteincoding, axisLabSize = 13, titleLabSize = 22, 
+                        hline = 90, 
+                        components = getComponents(pca_object_proteincoding, 1:5),
+                        vline = 5) +
+  geom_label(aes(4, 50, label = '90% explained variation', vjust = -1, size = 8))
+
+screeplot_proteincoding
+ggsave(paste(path, "results/03_screeplot_proteincoding_visitAB_SAT_rnaseq.png", sep="/"), plot = screeplot_proteincoding, device = "png", width = 10, height = 6)
+```
+
+
+
+#### Loadingsplots: proteincoding
+```{r echo=FALSE, warning=FALSE}
+loadingsplot_proteincoding <- plotloadings(pca_object_proteincoding,
+                              components = getComponents(pca_object_proteincoding, c(1,2,3,4,5)),
+                              rangeRetain = 0.1,
+                              labSize = 2.7,
+                              absolute = FALSE,
+                              title = 'Loadings plot',
+                              caption = 'Top 10% variables',
+                              shape = 23, shapeSizeRange = c(1, 16),
+                              col = c('white', 'forestgreen'),
+                              drawConnectors = FALSE)
+
+loadingsplot_proteincoding
+ggsave(paste(path, "results/03_loadingsplot_proteincoding_allPC_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_proteincoding, device = "png", width = 25, height = 11)
+```
+
+##### PC1: proteincoding
+```{r}
+loadingsplot_pc1_proteincoding <- plotloadings(pca_object_proteincoding,
+    components = getComponents(pca_object_proteincoding, c(1)),
+    rangeRetain = 0.12, absolute = TRUE,
+    col = c('black', 'green', 'forestgreen'),
+    drawConnectors = TRUE, labSize = 4) + coord_flip()
+loadingsplot_pc1_proteincoding
+
+ggsave(paste(path, "results/03_loadingsplot_proteincoding_PC1_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_pc1_proteincoding, device = "png", width = 10, height = 6)
+```
+
+##### PC2: protein coding
+```{r}
+loadingsplot_pc2_proteincoding <- plotloadings(pca_object_proteincoding,
+    components = getComponents(pca_object_proteincoding, c(2)),
+    rangeRetain = 0.12, absolute = TRUE,
+    col = c('black', 'green', 'forestgreen'),
+    drawConnectors = TRUE, labSize = 4) + coord_flip()
+
+loadingsplot_pc2_proteincoding
+
+ggsave(paste(path, "results/03_loadingsplot_proteincoding_PC2_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_pc2_proteincoding, device = "png", width = 10, height = 6)
+```
+
+##### PC4: protein coding
+```{r}
+loadingsplot_pc4_proteincoding <- plotloadings(pca_object_proteincoding,
+    components = getComponents(pca_object_proteincoding, c(4)),
+    rangeRetain = 0.12, absolute = TRUE,
+    col = c('black', 'green', 'forestgreen'),
+    drawConnectors = TRUE, labSize = 4) + coord_flip()
+
+loadingsplot_pc4_proteincoding
+
+ggsave(paste(path, "results/03_loadingsplot_proteincoding_PC4_visitAB_SAT_rnaseq.png", sep="/"), plot = loadingsplot_pc4_proteincoding, device = "png", width = 10, height = 6)
+```
+
+#### Eigencorr plots: protein coding
+Interpretation of r and r squared values: 
+* E1: Pearson's r is usually used to express the correlation between two quantities. For example let's say you want to demonstrate that the hours spend studying are correlated with the grade obtained in an exam. You could calculate Pearson's r to evaluate whether the two quantities are correlated. r values ranges from -1 to +1
+
+* E2: R^2 is usually used to evaluate the quality of fit of a model on data. It expresses what fraction of the variability of your dependent variable (Y) is explained by your independent variable (X). R^2 values ranges between 0 to +1
+
+##### E1: protein coding
+```{r}
+e1plot_proteincoding <- eigencorplot(pca_object_proteincoding,
+    components = getComponents(pca_object_proteincoding, 1:5),
+    metavars = c("Birth weight category","Visit","Height", "Weight","BMI","Total lean mass","Total fat mass", "VAT mass","F-glucose","F-C-peptide","F-insulin", "HOMA-IR","Total cholesterol","LDL cholesterol","HDL cholesterol", "F-triglyceride","Hepatic fat","ASAT","ALAT", "GGT","NAFLD status","Birth weight - NAFLD status"),
+    col = c('#283A90', 'white', '#BE2625'),
+    cexCorval = 1.2,
+    colCorval = 'white',
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    rotLabX = 45,
+    posColKey = 'top',
+    cexLabColKey = 1.5,
+    scale = TRUE,
+    plotRsquared = FALSE,
+    main = 'PC1-5 clinical correlations Pearsons r ',
+    corFUN = "pearson",
+    corUSE = "pairwise.complete.obs",
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1),
+    colFrame = 'white')
+print(e1plot_proteincoding)
+
+tiff(file = paste(path, "results/03_eigencorplot_proteincoding_PearsonsR_visitAB_SAT_rnaseq.tiff", sep="/"), units="in", width=8, height=13, res=300, pointsize = 0.0001)
+print(e1plot_proteincoding)
+dev.off()
+```
+
+##### E2: protein coding
+```{r}
+e2plot_proteincoding <-  eigencorplot(pca_object_proteincoding,
+    components = getComponents(pca_object_proteincoding, 1:5),
+    metavars = c("Birth weight category","Visit","Height", "Weight","BMI","Total lean mass","Total fat mass", "VAT mass","F-glucose","F-C-peptide","F-insulin", "HOMA-IR","Total cholesterol","LDL cholesterol","HDL cholesterol", "F-triglyceride","Hepatic fat","ASAT","ALAT", "GGT","NAFLD status","Birth weight - NAFLD status"),
+    col = c('white', 'gold', 'darkgreen'),
+    cexCorval = 1.2,
+    fontCorval = 2,
+    posLab = 'bottomleft',
+    posColKey = 'top',
+    rotLabX = 45,
+    scale = TRUE,
+    main = bquote(PC1-5 ~ clinical ~ correlations ~ Pearson ~ r^2),
+    plotRsquared = TRUE,
+    corFUN = 'pearson',
+    corUSE = 'pairwise.complete.obs',
+    corMultipleTestCorrection = 'BH',
+    signifSymbols = c('****', '***', '**', '*', ''),
+    signifCutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1))
+print(e2plot_proteincoding)
+
+tiff(file = paste(path, "results/03_eigencorplot_proteincoding_PearsonsR2_visitAB_SAT_rnaseq.tiff", sep="/"), units="in", width=8, height=13, res=300, pointsize = 0.0001)
+print(e2plot_proteincoding)
+dev.off()
+```
+
+
+
+
+
+## Differential gene expression Analysis
+### Model Fitting 
+
+Now we can setup the design matrix used for conducting contrasts with the generalized linear models using the model.matrix command.
+
+#### Fit 1: unpaired
+```{r}
+glm_design <- model.matrix(~ 0 + bwcat_visit, data=metadata_sat_order_matrix) # 0 means no intercept column and instead a column for each group.
+
+# Add the group names to the columns of design matrix
+colnames(glm_design) <- levels(metadata_sat_order_matrix$bwcat_visit)
+
+# Estimate common dispersion
+glm_list <- estimateDisp(glm_list, glm_design, robust=TRUE)
+glm_list_proteincoding <- estimateDisp(glm_list_proteincoding, glm_design, robust=TRUE)
+
+#Fit generalized log-linear model to count data
+glm_fit <- glmFit(glm_list, glm_design)
+glm_fit_proteincoding <- glmFit(glm_list_proteincoding, glm_design)
+
+# Plot dispersion
+# BCV shows the root-estimate, i.e., the biological coefficient of variation for each gene.
+plotBCV(glm_list)
+```
+
+
+#### Fit 2: paired
+```{r}
+glm_design_paired <- model.matrix(~ 0 + bwcat_visit + person_id, data=metadata_sat_order_matrix) 
+
+# Estimate common dispersion
+glm_list_paired <- estimateDisp(glm_list, glm_design_paired, robust=TRUE)
+glm_list_proteincoding_paired <- estimateDisp(glm_list_proteincoding, glm_design_paired, robust=TRUE)
+
+# Fit generalized log-linear model to count data
+glm_fit_paired <- glmFit(glm_list_paired, glm_design_paired)
+glm_fit_proteincoding_paired <- glmFit(glm_list_proteincoding_paired, glm_design_paired)
+
+# Plot dispersion
+# BCV shows the root-estimate, i.e., the biological coefficient of variation for each gene.
+plotBCV(glm_list_paired)
+```
+
+
+## ANOVA Contrasts
+- visit (A,B)
+- bwcat (LBW, NBW)
+- delta (LBW_AB, NBW_AB)
+
+Identify any significant main effect associated with an explanatory variable, which are categorical factors like bwcat and visit
+
+
+### A1: Visit (A): LBW_A vs NBW_A
+```{r}
+# Make the contrast
+con_A_LBWvsNBW <- makeContrasts(LBW_A-NBW_A, levels=glm_design)
+
+# glmTreat: all genes
+treat_A_LBWvsNBW <- glmTreat(glm_fit, contrast=con_A_LBWvsNBW)
+summary(decideTests(treat_A_LBWvsNBW))
+topTags(treat_A_LBWvsNBW)
+
+# glmTreat: protein coding
+treat_A_LBWvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding, contrast=con_A_LBWvsNBW)
+summary(decideTests(treat_A_LBWvsNBW_proteincoding))
+topTags(treat_A_LBWvsNBW_proteincoding)
+```
+
+##### A1: All genes
+Results table of DE genes: all genes
+```{r}
+tagsTbl_A_LBWvsNBW <- topTags(treat_A_LBWvsNBW, n=nrow(treat_A_LBWvsNBW$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: all genes
+```{r}
+tagsTbl_A_LBWvsNBW$regulation <- "Not significant"
+tagsTbl_A_LBWvsNBW$regulation[tagsTbl_A_LBWvsNBW$logFC > 1 & tagsTbl_A_LBWvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_A_LBWvsNBW$regulation[tagsTbl_A_LBWvsNBW$logFC < -1 & tagsTbl_A_LBWvsNBW$PValue < 0.05] <- "Down"
+tagsTbl_A_LBWvsNBW
+
+tagsTbl_A_LBWvsNBW_filtered <- tagsTbl_A_LBWvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_A_LBWvsNBW_filtered
+```
+
+Volcano plot: all genes
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_A_LBWvsNBW$DElabel <- NA
+tagsTbl_A_LBWvsNBW$DElabel[tagsTbl_A_LBWvsNBW$regulation  != "Not significant"] <- rownames(tagsTbl_A_LBWvsNBW)[tagsTbl_A_LBWvsNBW$regulation  != "Not significant"]
+
+volcano_A_LBWvsNBW_rnaseq <- ggplot(data=tagsTbl_A_LBWvsNBW, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Baseline (A): LBW vs NBW", subtitle = "All genes") +  #, title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-6,6) +
+  ylim(-0,6) +
+  theme_classic()
+
+volcano_A_LBWvsNBW_rnaseq
+```
+
+##### A1: Protein coding
+Results table of DE genes: all genes
+```{r}
+tagsTbl_A_LBWvsNBW_proteincoding <- topTags(treat_A_LBWvsNBW_proteincoding, n=nrow(treat_A_LBWvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: protein coding
+```{r}
+tagsTbl_A_LBWvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_A_LBWvsNBW_proteincoding$regulation[tagsTbl_A_LBWvsNBW_proteincoding$logFC > 1 & tagsTbl_A_LBWvsNBW_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_A_LBWvsNBW_proteincoding$regulation[tagsTbl_A_LBWvsNBW_proteincoding$logFC < -1 & tagsTbl_A_LBWvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_A_LBWvsNBW_filtered_proteincoding <- tagsTbl_A_LBWvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_A_LBWvsNBW_filtered_proteincoding
+
+tagsTbl_A_LBWvsNBW_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  select(geneid) %>% 
+  write_csv(paste(path, "data/03_topgenes_A1_A_LBWvsNBW_visitAB_SAT_proteincoding_rnaseq.csv", sep="/")) 
+```
+
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_A_LBWvsNBW_proteincoding$DElabel <- NA
+tagsTbl_A_LBWvsNBW_proteincoding$DElabel[tagsTbl_A_LBWvsNBW_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_A_LBWvsNBW_proteincoding)[tagsTbl_A_LBWvsNBW_proteincoding$regulation  != "Not significant"]
+
+volcano_A_LBWvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_A_LBWvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Baseline: LBW vs. NBW", subtitle = "Proteincoding")  +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,3) +
+  theme_classic()
+
+volcano_A_LBWvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A1_A_LBWvsNBW_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_A_LBWvsNBW_rnaseq_proteincoding, device = "png", width = 7.5, height = 5)
+```
+
+
+### A2: Visit (B): LBW_B vs NBW_B
+```{r}
+# Make the contrast
+con_B_LBWvsNBW <- makeContrasts(LBW_B-NBW_B, levels=glm_design)
+
+# glmTreat: all genes
+treat_B_LBWvsNBW <- glmTreat(glm_fit, contrast=con_B_LBWvsNBW)
+summary(decideTests(treat_B_LBWvsNBW))
+topTags(treat_B_LBWvsNBW)
+
+# glmTreat: protein coding
+treat_B_LBWvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding, contrast=con_B_LBWvsNBW)
+summary(decideTests(treat_B_LBWvsNBW_proteincoding))
+topTags(treat_B_LBWvsNBW_proteincoding)
+```
+
+##### A2: All genes
+Results table of DE genes: allgenes
+```{r}
+tagsTbl_B_LBWvsNBW <- topTags(treat_B_LBWvsNBW, n=nrow(treat_B_LBWvsNBW$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: allgenes
+```{r}
+tagsTbl_B_LBWvsNBW$regulation <- "Not significant"
+tagsTbl_B_LBWvsNBW$regulation[tagsTbl_B_LBWvsNBW$logFC > 1 & tagsTbl_B_LBWvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_B_LBWvsNBW$regulation[tagsTbl_B_LBWvsNBW$logFC < -1 & tagsTbl_B_LBWvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_B_LBWvsNBW_filtered <- tagsTbl_B_LBWvsNBW %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_B_LBWvsNBW_filtered
+```
+
+Volcano plot: allgenes
+```{r}
+tagsTbl_B_LBWvsNBW$topDE <- "Not significant"
+tagsTbl_B_LBWvsNBW$topDE[tagsTbl_B_LBWvsNBW$logFC > 1 & tagsTbl_B_LBWvsNBW$FDR <= 0.1] <- "Up"
+tagsTbl_B_LBWvsNBW$topDE[tagsTbl_B_LBWvsNBW$logFC < -1 & tagsTbl_B_LBWvsNBW$FDR <= 0.1] <- "Down"
+
+
+ggplot(data=tagsTbl_B_LBWvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "COF (visit B): LBW vs NBW", subtitle = "All genes") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,2)
+```
+
+##### A2: Protein coding
+Results table of DE genes: protein coding
+```{r}
+tagsTbl_B_LBWvsNBW_proteincoding <- topTags(treat_B_LBWvsNBW_proteincoding, n=nrow(treat_B_LBWvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+
+Significantly DE genes: protein coding 
+```{r}
+tagsTbl_B_LBWvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_B_LBWvsNBW_proteincoding$regulation[tagsTbl_B_LBWvsNBW_proteincoding$logFC > 1 & tagsTbl_B_LBWvsNBW_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_B_LBWvsNBW_proteincoding$regulation[tagsTbl_B_LBWvsNBW_proteincoding$logFC < -1 & tagsTbl_B_LBWvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_B_LBWvsNBW_filtered_proteincoding <- tagsTbl_B_LBWvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_B_LBWvsNBW_filtered_proteincoding
+
+tagsTbl_B_LBWvsNBW_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  select(geneid) %>% 
+  write_csv(paste(path, "data/03_A2_B_LBWvsNBW_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_B_LBWvsNBW_proteincoding$DElabel <- NA
+tagsTbl_B_LBWvsNBW_proteincoding$DElabel[tagsTbl_B_LBWvsNBW_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_B_LBWvsNBW_proteincoding)[tagsTbl_B_LBWvsNBW_proteincoding$regulation  != "Not significant"]
+
+volcano_B_LBWvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_B_LBWvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC' , title = "COF: LBW vs. NBW", subtitle = "Proteincoding") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,3) +
+  theme_classic()
+
+volcano_B_LBWvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A2_B_LBWvsNBW_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_B_LBWvsNBW_rnaseq_proteincoding, device = "png", width = 7.5, height = 5)
+```
+
+
+
+
+
+
+### A3: Bwcat (LBW): LBW_B vs LBW_A
+```{r}
+# Make the contrast
+con_LBW_BvsA <- makeContrasts(bwcat_visitLBW_B-bwcat_visitLBW_A, levels=glm_design_paired)
+
+# glmTreat: allgenes
+treat_LBW_BvsA <- glmTreat(glm_fit_paired, contrast=con_LBW_BvsA)
+summary(decideTests(treat_LBW_BvsA))
+topTags(treat_LBW_BvsA)
+
+# glmTreat: protein coding
+treat_LBW_BvsA_proteincoding <- glmTreat(glm_fit_proteincoding_paired, contrast=con_LBW_BvsA)
+summary(decideTests(treat_LBW_BvsA_proteincoding))
+topTags(treat_LBW_BvsA_proteincoding)
+```
+
+#### A3: All genes 
+Results table of DE genes: allgenes
+```{r}
+tagsTbl_LBW_BvsA <- topTags(treat_LBW_BvsA, n=nrow(treat_LBW_BvsA$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: allgenes
+```{r}
+tagsTbl_LBW_BvsA$regulation <- "Not significant"
+tagsTbl_LBW_BvsA$regulation[tagsTbl_LBW_BvsA$logFC > 1 & tagsTbl_LBW_BvsA$PValue < 0.05] <- "Up"
+tagsTbl_LBW_BvsA$regulation[tagsTbl_LBW_BvsA$logFC < -1 & tagsTbl_LBW_BvsA$PValue < 0.05] <- "Down"
+
+tagsTbl_LBW_BvsA_filtered <- tagsTbl_LBW_BvsA %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_LBW_BvsA_filtered
+```
+
+Volcanoplot: allgenes 
+```{r}
+tagsTbl_LBW_BvsA$topDE <- "Not significant"
+tagsTbl_LBW_BvsA$topDE[tagsTbl_LBW_BvsA$logFC > 1 & tagsTbl_LBW_BvsA$FDR < 0.1] <- "Up"
+tagsTbl_LBW_BvsA$topDE[tagsTbl_LBW_BvsA$logFC < -1 & tagsTbl_LBW_BvsA$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_LBW_BvsA, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey")) + 
+    labs(x = 'Log2FC', title = "LBW: COF vs baseline", subtitle = "All genes") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-16,16) +
+  ylim(-1,16)
+```
+
+
+
+#### A3: Protein coding
+Results table of DE genes: protein coding
+```{r}
+tagsTbl_LBW_BvsA_proteincoding <- topTags(treat_LBW_BvsA_proteincoding, n=nrow(treat_LBW_BvsA_proteincoding$table), adjust.method="fdr")$table %>% 
+  mutate(Genes = (rownames(.)))
+```
+
+Significantly DE genes: protein coding 
+```{r}
+tagsTbl_LBW_BvsA_proteincoding$regulation <- "Not significant"
+tagsTbl_LBW_BvsA_proteincoding$regulation[tagsTbl_LBW_BvsA_proteincoding$logFC > 1 & tagsTbl_LBW_BvsA_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_LBW_BvsA_proteincoding$regulation[tagsTbl_LBW_BvsA_proteincoding$logFC < -1 & tagsTbl_LBW_BvsA_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_LBW_BvsA_filtered_proteincoding <- tagsTbl_LBW_BvsA_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_LBW_BvsA_filtered_proteincoding
+```
+
+IPA: protein coding
+```{r}
+IPA_LBW_BvsA_proteincoding <- tagsTbl_LBW_BvsA_proteincoding %>% 
+  mutate(genename_ens = rownames(tagsTbl_LBW_BvsA_proteincoding)) %>% 
+  select(genename_ens, logFC, logCPM, PValue, FDR, regulation) %>%  
+  separate(genename_ens, into = c("Gene.name", "ENS"), sep = "_") 
+
+IPA_LBW_BvsA_proteincoding %>% 
+  write_csv(paste(path, "data/03_IPA_A3_LBW_BvsA_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_LBW_BvsA_proteincoding$DElabel <- NA
+tagsTbl_LBW_BvsA_proteincoding$DElabel[tagsTbl_LBW_BvsA_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_LBW_BvsA_proteincoding)[tagsTbl_LBW_BvsA_proteincoding$regulation  != "Not significant"]
+
+# Define the desired order of the variables
+desired_order <- c("Up", "Down", "Not significant")
+
+volcano_LBW_BvsA_rnaseq_proteincoding <- 
+  ggplot(data=tagsTbl_LBW_BvsA_proteincoding, aes(x=logFC, 
+                                                  y=-log10(PValue), 
+                                                  color=regulation, 
+                                                  label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom",
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 17), 
+        legend.text = element_text(size = 15),
+        title = element_text(size = 15))+
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  #xlim(-4.4,2) +
+  #ylim(-0,4) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "LBW") 
+volcano_LBW_BvsA_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A3_LBW_BvsA_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_LBW_BvsA_rnaseq_proteincoding, device = "png", width = 6.5, height = 7)
+
+# TIFF file
+tiff(file = paste(path, "results/03_volcano_A3_LBW_BvsA_visitAB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=6.5, height=7, res=600, pointsize = 0.0001)
+print(volcano_LBW_BvsA_rnaseq_proteincoding)
+dev.off()
+```
+
+
+### A4: Bwcat (NBW): NBW_B vs NBW_A
+```{r}
+# Make the contrast
+con_NBW_BvsA <- makeContrasts(bwcat_visitNBW_B-bwcat_visitNBW_A, levels=glm_design_paired)
+
+# glmTreat: allgenes
+treat_NBW_BvsA <- glmTreat(glm_fit_paired, contrast=con_NBW_BvsA)
+summary(decideTests(treat_NBW_BvsA))
+topTags(treat_NBW_BvsA)
+
+# glmTreat: protein coding
+treat_NBW_BvsA_proteincoding <- glmTreat(glm_fit_proteincoding_paired, contrast=con_NBW_BvsA)
+summary(decideTests(treat_NBW_BvsA_proteincoding))
+topTags(treat_NBW_BvsA_proteincoding)
+```
+
+#### A4: All genes
+Results table of DE genes: all genes
+```{r}
+tagsTbl_NBW_BvsA <- topTags(treat_NBW_BvsA, n=nrow(treat_NBW_BvsA$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: allgenes
+```{r}
+tagsTbl_NBW_BvsA$regulation <- "Not significant"
+tagsTbl_NBW_BvsA$regulation[tagsTbl_NBW_BvsA$logFC > 1 & tagsTbl_NBW_BvsA$PValue < 0.05] <- "Up"
+tagsTbl_NBW_BvsA$regulation[tagsTbl_NBW_BvsA$logFC < -1 & tagsTbl_NBW_BvsA$PValue < 0.05] <- "Down"
+
+tagsTbl_NBW_BvsA_filtered <- tagsTbl_NBW_BvsA %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_NBW_BvsA_filtered
+```
+
+Volcanoplot: allgenes
+```{r}
+tagsTbl_NBW_BvsA$topDE <- "Not significant"
+tagsTbl_NBW_BvsA$topDE[tagsTbl_NBW_BvsA$logFC > 1 & tagsTbl_NBW_BvsA$FDR < 0.1] <- "Up"
+tagsTbl_NBW_BvsA$topDE[tagsTbl_NBW_BvsA$logFC < -1 & tagsTbl_NBW_BvsA$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_NBW_BvsA, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "NBW: visit B vs. A", subtitle = "All genes") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-3,3) +
+  ylim(-0,2)
+```
+
+
+
+#### A4: Protein coding
+Results table of DE genes: all genes
+```{r}
+tagsTbl_NBW_BvsA_proteincoding <- topTags(treat_NBW_BvsA_proteincoding, n=nrow(treat_NBW_BvsA_proteincoding$table), adjust.method="fdr")$table %>% 
+  mutate(Genes = rownames(.))
+```
+
+
+Significantly DE genes: protein coding
+```{r}
+tagsTbl_NBW_BvsA_proteincoding$regulation <- "Not significant"
+tagsTbl_NBW_BvsA_proteincoding$regulation[tagsTbl_NBW_BvsA_proteincoding$logFC > 1 & tagsTbl_NBW_BvsA_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_NBW_BvsA_proteincoding$regulation[tagsTbl_NBW_BvsA_proteincoding$logFC < -1 & tagsTbl_NBW_BvsA_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_NBW_BvsA_filtered_proteincoding <- tagsTbl_NBW_BvsA_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_NBW_BvsA_filtered_proteincoding
+
+# Add the significant lipids to the plot
+tagsTbl_NBW_BvsA_proteincoding$DElabel <- NA
+tagsTbl_NBW_BvsA_proteincoding$DElabel[tagsTbl_NBW_BvsA_proteincoding$regulation != "Not significant"] <- rownames(tagsTbl_NBW_BvsA_proteincoding)[tagsTbl_NBW_BvsA_proteincoding$regulation != "Not significant"]
+```
+
+IPA: protein coding
+```{r}
+IPA_NBW_BvsA_proteincoding <- tagsTbl_NBW_BvsA_proteincoding %>% 
+  mutate(genename_ens = rownames(tagsTbl_NBW_BvsA_proteincoding)) %>% 
+  select(genename_ens, logFC, logCPM, PValue, FDR, regulation) %>%  
+  separate(genename_ens, into = c("Gene.name", "ENS"), sep = "_") 
+
+IPA_NBW_BvsA_proteincoding %>% 
+  write_csv(paste(path, "data/03_A4_NBW_BvsA_visitAB_protiencoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_NBW_BvsA_proteincoding$DElabel <- NA
+tagsTbl_NBW_BvsA_proteincoding$DElabel[tagsTbl_NBW_BvsA_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_NBW_BvsA_proteincoding)[tagsTbl_NBW_BvsA_proteincoding$regulation  != "Not significant"]
+
+# Define the desired order of the variables
+desired_order <- c("Up", "Down", "Not significant")
+
+volcano_NBW_BvsA_rnaseq_proteincoding <- 
+  ggplot(data=tagsTbl_NBW_BvsA_proteincoding, aes(x=logFC, 
+                                                  y=-log10(PValue), 
+                                                  color=regulation, 
+                                                  label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom",
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 17), 
+        legend.text = element_text(size = 15),
+        title = element_text(size = 15))+
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  #xlim(-2.7,2.7) +
+  #ylim(-0,4.7) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "NBW") 
+volcano_NBW_BvsA_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A4_NBW_BvsA_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_NBW_BvsA_rnaseq_proteincoding, device = "png", width = 6.5, height = 7)
+
+# TIFF file
+tiff(file = paste(path, "results/03_volcano_A4_NBW_BvsA_visitAB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=6.5, height=7, res=600, pointsize = 0.0001)
+print(volcano_NBW_BvsA_rnaseq_proteincoding)
+dev.off()
+```
+
+
+### A5: Delta contrast LBW(AB) vs. NBW(AB)
+This contrast is between the LBW and NBW levels of the bwcat factor.
+```{r}
+# Make the contrast
+con_deltaAB_LBWvsNBW <- makeContrasts(visit = (bwcat_visitLBW_B-bwcat_visitLBW_A)-(bwcat_visitNBW_B-bwcat_visitNBW_A),levels=glm_design_paired)
+
+# glmTreat: all genes
+treat_deltaAB_LBWvsNBW <- glmTreat(glm_fit_paired, contrast=con_deltaAB_LBWvsNBW)
+summary(decideTests(treat_deltaAB_LBWvsNBW))
+topTags(treat_deltaAB_LBWvsNBW)
+
+# glmTreat: protein coding
+treat_deltaAB_LBWvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_paired, contrast=con_deltaAB_LBWvsNBW)
+summary(decideTests(treat_deltaAB_LBWvsNBW_proteincoding))
+topTags(treat_deltaAB_LBWvsNBW_proteincoding)
+```
+
+
+MT1A	-1.7324665	-1.7356931	1.484980412	0.002489047	0.9999985
+ELOVL6	2.1172153	2.1175687	5.241808846	0.007785736	0.9999985
+C17orf113	0.9856721	0.9991160	-0.933717937	0.007899029	0.9999985
+C4A	-1.3809369	-1.3898818	-0.198481047	0.018625844	0.9999985
+IGSF9B	-1.1168216	-1.1361199	-1.236807421	0.022295926	0.9999985
+WNT9A	0.5776068	0.5805206	0.340224401	0.023125062	0.9999985
+CH25H	-1.2018278	-1.2115721	-0.512772893	0.024814905	0.9999985
+PTX3	-1.6784882	-1.6845508	0.008777034	0.027709679	0.9999985
+AKR1C8	0.9333325	0.9493659	-1.062693641	0.028154577	0.9999985
+TMPRSS5	0.8361136	0.8388785	0.797632708	0.030984249	0.9999985
+
+
+
+
+
+#### A5: All genes
+Results table of DE genes: all genes
+```{r}
+tagsTbl_deltaAB_LBWvsNBW <- topTags(treat_deltaAB_LBWvsNBW, n=nrow(treat_deltaAB_LBWvsNBW$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: allgenes
+```{r}
+tagsTbl_deltaAB_LBWvsNBW$regulation <- "Not significant"
+tagsTbl_deltaAB_LBWvsNBW$regulation[tagsTbl_deltaAB_LBWvsNBW$logFC > 1 & tagsTbl_deltaAB_LBWvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_deltaAB_LBWvsNBW$regulation[tagsTbl_deltaAB_LBWvsNBW$logFC < -1 & tagsTbl_deltaAB_LBWvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_deltaAB_LBWvsNBW_filtered <- tagsTbl_deltaAB_LBWvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_deltaAB_LBWvsNBW_filtered
+```
+
+
+Volcanoplot: all genes
+```{r}
+tagsTbl_deltaAB_LBWvsNBW$topDE <- "Not significant"
+tagsTbl_deltaAB_LBWvsNBW$topDE[tagsTbl_deltaAB_LBWvsNBW$logFC > 1 & tagsTbl_deltaAB_LBWvsNBW$FDR < 0.1] <- "Up"
+tagsTbl_deltaAB_LBWvsNBW$topDE[tagsTbl_deltaAB_LBWvsNBW$logFC < -1 & tagsTbl_deltaAB_LBWvsNBW$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_deltaAB_LBWvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey", "#FA8072")) + 
+    labs(x = 'Log2FC', title = "Delta changes: LBW vs. NBW", subtitle = "All genes") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-3,3) +
+  ylim(-0,3)
+```
+
+
+
+#### A5: Protein coding
+Results table of DE genes: all genes
+```{r}
+tagsTbl_deltaAB_LBWvsNBW_proteincoding <- topTags(treat_deltaAB_LBWvsNBW_proteincoding, n=nrow(treat_deltaAB_LBWvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Significantly DE genes: protein coding
+```{r}
+tagsTbl_deltaAB_LBWvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_deltaAB_LBWvsNBW_proteincoding$regulation[tagsTbl_deltaAB_LBWvsNBW_proteincoding$logFC > 1 & tagsTbl_deltaAB_LBWvsNBW_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_deltaAB_LBWvsNBW_proteincoding$regulation[tagsTbl_deltaAB_LBWvsNBW_proteincoding$logFC < -1 & tagsTbl_deltaAB_LBWvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_deltaAB_LBWvsNBW_filtered_proteincoding <- tagsTbl_deltaAB_LBWvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  
+  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_deltaAB_LBWvsNBW_filtered_proteincoding
+```
+
+IPA: protein coding
+```{r}
+IPA_deltaAB_LBWvsNBW_proteincoding <- tagsTbl_deltaAB_LBWvsNBW_proteincoding %>% 
+  mutate(genename_ens = rownames(tagsTbl_deltaAB_LBWvsNBW_proteincoding)) %>% 
+  select(genename_ens, logFC, logCPM, PValue, FDR, regulation) %>%  
+  separate(genename_ens, into = c("Gene.name", "ENS"), sep = "_") 
+
+IPA_deltaAB_LBWvsNBW_proteincoding %>% 
+  write_csv(paste(path, "data/03_A5_deltaAB_visitAB_LBWvsNBW_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_deltaAB_LBWvsNBW_proteincoding$DElabel <- NA
+tagsTbl_deltaAB_LBWvsNBW_proteincoding$DElabel[tagsTbl_deltaAB_LBWvsNBW_proteincoding$regulation != "Not significant"] <- rownames(tagsTbl_deltaAB_LBWvsNBW_proteincoding)[tagsTbl_deltaAB_LBWvsNBW_proteincoding$regulation != "Not significant"]
+
+
+# Define the desired order of the variables
+desired_order <- c("Up", "Down", "Not significant")
+
+volcano_delta_visitAB_NBWvsLBW_rnaseq_proteincoding <- 
+  ggplot(data=tagsTbl_deltaAB_LBWvsNBW_proteincoding, aes(x=logFC, 
+                                                          y=-log10(PValue), 
+                                                          color=regulation, 
+                                                          label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-3.5,3.5) +
+  ylim(-0,3.5) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "Delta changes: LBW vs NBW") 
+volcano_delta_visitAB_NBWvsLBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A5_delta_visitAB_NBWvsLBW_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_delta_visitAB_NBWvsLBW_rnaseq_proteincoding, device = "png", width = 6, height = 7.5)
+```
+
+### Genes
+
+Calculate the log2 CPM of the gene count data by setting the log argument of the cpm command to TRUE like so.
+```{r}
+logcpm_explore <- cpm(glm_list_proteincoding, log=TRUE) 
+
+logcpm_explore_df <- logcpm_explore %>% 
+  as_tibble() %>% 
+  mutate(ENS = rownames(logcpm_explore)) %>% 
+  separate(ENS, into = c("Gene.name", "ens"), sep = "_") %>% 
+  select(everything(), -ens) %>% 
+  pivot_longer(!Gene.name, names_to = "sample", values_to = "logCPM") %>% 
+  mutate(bwcat = case_when(str_detect(sample, "LBW") ~ "LBW",
+                           str_detect(sample, "NBW") ~ "NBW"),
+         visit = case_when(str_detect(sample, "A") ~ "A",
+                           str_detect(sample, "B") ~ "B")) 
+logcpm_explore_df
+
+logcpm_explore_df %>% 
+  write_csv(paste(path, "data/03_transcriptomicsdata_visitAB_logcpm_values.csv", sep="/")) 
+```
+
+#### MT1A
+```{r}
+genecounts_MT1A <- logcpm_explore_df %>% 
+  filter(Gene.name == "MT1A") %>% 
+  arrange(-logCPM) 
+
+ggplot(genecounts_MT1A, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "MT1A") +
+  facet_wrap(vars(bwcat))
+```
+
+#### ELOVL6
+```{r}
+genecounts_ELOVL6 <- logcpm_explore_df %>% 
+  filter(Gene.name == "ELOVL6") %>% 
+  arrange(-logCPM) 
+
+ggplot(genecounts_ELOVL6, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "ELOVL6") +
+  facet_wrap(vars(bwcat))
+```
+
+#### C4A
+```{r}
+genecounts_C4A <- logcpm_explore_df %>% 
+  filter(Gene.name == "C4A") %>% 
+  arrange(-logCPM) 
+
+ggplot(genecounts_C4A, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "C4A") +
+  facet_wrap(vars(bwcat))
+```
+
+#### IGSF9B
+```{r}
+genecounts_IGSF9B <- logcpm_explore_df %>% 
+  filter(Gene.name == "IGSF9B") %>% 
+  arrange(-logCPM) 
+
+ggplot(genecounts_IGSF9B, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "IGSF9B") +
+  facet_wrap(vars(bwcat))
+```
+
+#### CH25H
+```{r}
+genecounts_CH25H <- logcpm_explore_df %>% 
+  filter(Gene.name == "CH25H") %>% 
+  arrange(-logCPM) 
+
+ggplot(genecounts_CH25H, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "CH25H") +
+  facet_wrap(vars(bwcat))
+```
+
+#### DES
+```{r}
+genecounts_PTX3 <- logcpm_explore_df %>% 
+  filter(Gene.name == "DES") %>% 
+  arrange(-logCPM) 
+
+ggplot(genecounts_PTX3, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "DES") +
+  facet_wrap(vars(bwcat))
+```
+
+#### ACTG2
+```{r}
+genecounts_CHRM3 <- logcpm_explore_df %>% 
+  filter(Gene.name == "ACTG2") 
+
+ggplot(genecounts_CHRM3, aes(visit, logCPM, fill = visit)) +
+  geom_boxplot() +
+  labs(title = "ACTG2") +
+  facet_wrap(vars(bwcat))
+```
+
+# Subgroup analyses: ANOVA Design (LBWwoNAFLD, LBWwNAFLD, NBW)
+Levels: LBW_wNAFLD_A LBW_wNAFLD_B LBW_woNAFLD_A LBW_woNAFLD_B NBW_woNAFLD_A NBW_woNAFLD_B
+```{r}
+# Convert from df to matrix
+metadata_sat_order_matrix_nafld <- metadata_sat %>% 
+  rename(bwcat = "bwcat.x") %>% 
+  mutate(nafld = case_when(bwcat == "LBW/NAFLD" ~ "wNAFLD",
+                           bwcat == "LBW" ~ "woNAFLD",
+                           bwcat == "NBW" ~ "woNAFLD"),
+         bwcat = case_when(bwcat == "LBW/NAFLD" ~ "LBW",
+                           TRUE ~ as.character(bwcat)),) %>% 
+  select(sample_id, bwcat, nafld, visit, BMI)
+
+# The metadata needs to be arranged in the same order as the samples in the genecount df
+metadata_sat_order_matrix_nafld %>% 
+  group_by(bwcat,nafld, visit) %>%
+  count()
+
+group_nafld <- factor(metadata_sat_order_matrix_nafld$bwcat_nafld_vist)
+
+glm_targets_nafld <- data.frame(metadata_sat_order_matrix_nafld[,-1], row.names = metadata_sat_order_matrix_nafld$BGI_ID)
+glm_targets_nafld
+
+# Create an object with the groupings for our samples.
+glm_group_nafld <- factor(paste(glm_targets_nafld$bwcat, glm_targets_nafld$nafld, glm_targets_nafld$visit, sep="_"))
+glm_group_nafld
+
+# Align order of genecount with metadata
+genecounts_sat_order_nafld <- genecounts_sat_geneID %>% 
+  select(Geneid, metadata_sat_order_matrix_nafld$sample_id) 
+
+# Convert from df to matrix
+genecounts_sat_order_matrix_nafld <- data.frame(genecounts_sat_order_nafld[,-1], row.names = genecounts_sat_order_nafld$Geneid)
+
+# Rename columns
+colnames(genecounts_sat_order_matrix_nafld)<-paste(colnames(genecounts_sat_order_matrix_nafld),glm_group_nafld,sep="_")
+genecounts_sat_order_matrix_nafld
+```
+
+
+
+
+```{r}
+# Convert from df to matrix
+metadata_sat_order_matrix_nafld <- metadata_sat %>% 
+  rename(bwcat = "bwcat.x") %>% 
+  mutate(nafld = case_when(bwcat == "LBW/NAFLD" ~ "wNAFLD",
+                           bwcat == "LBW" ~ "woNAFLD",
+                           bwcat == "NBW" ~ "woNAFLD"),
+         bwcat = case_when(bwcat == "LBW/NAFLD" ~ "LBW",
+                           TRUE ~ as.character(bwcat)),) %>% 
+  mutate(bwcat_nafld_vist = paste(bwcat, nafld, visit, sep="_"))
+
+# The metadata needs to be arranged in the same order as the samples in the genecount df
+metadata_sat_order_matrix_nafld %>% 
+  group_by(bwcat_nafld_vist) %>%
+  count()
+
+group_nafld <- factor(metadata_sat_order_matrix_nafld$bwcat_nafld_vist)
+metadata_sat_order_matrix_nafld$bwcat_nafld_vist <- factor(metadata_sat_order_matrix_nafld$bwcat_nafld_vist)
+
+glm_targets_nafld <- data.frame(metadata_sat_order_matrix_nafld[,-1], row.names = metadata_sat_order_matrix_nafld$BGI_ID)
+glm_targets_nafld
+
+# Align order of genecount with metadata
+genecounts_sat_order_nafld <- genecounts_sat_geneID %>% 
+  select(Geneid, metadata_sat_order_matrix_nafld$sample_id) 
+
+# Convert from df to matrix
+genecounts_sat_order_matrix_nafld <- data.frame(genecounts_sat_order_nafld[,-1], row.names = genecounts_sat_order_nafld$Geneid)
+
+# Rename columns
+colnames(genecounts_sat_order_matrix_nafld)<-paste(colnames(genecounts_sat_order_matrix_nafld),glm_group_nafld,sep="_")
+genecounts_sat_order_matrix_nafld
+```
+
+
+
+
+
+Create an object with the table of counts
+```{r}
+dge_list_nafld <- DGEList(counts=genecounts_sat_order_matrix_nafld, group=group_nafld)
+```
+
+
+## Filtering
+```{r}
+keep_nafld <- filterByExpr(dge_list_nafld, group_nafld)  
+table(keep_nafld)
+
+glm_list_keep_nafld <- dge_list_nafld[keep_nafld, , keep.lib.sizes=FALSE]
+```
+
+## Normalization
+
+```{r}
+glm_list_nafld <- calcNormFactors(glm_list_keep_nafld)
+```
+
+
+## Gene types after filtering and normalization
+Distribution of gene types after filtering
+```{r}
+# Gene types matrix after filtering and normalization
+filtered_count_data_tibble_nafld <- as_tibble(glm_list_nafld$counts)
+filtered_count_data_alltypes_nafld <- rownames_to_column(filtered_count_data_tibble_nafld, var = "geneid") %>% 
+  mutate(geneid = rownames(glm_list_nafld$counts)) %>% 
+  separate(geneid, c(NA, "ENS"), sep = "_") %>% 
+  left_join(., annotation,  by = c("ENS" = "Gene.stable.ID")) 
+filtered_count_data_alltypes_nafld
+
+# Count gene types after filtering
+filtered_count_data_alltypes_nafld %>% 
+  group_by(Gene.type) %>% 
+  count() %>% 
+  arrange(-n)
+```
+
+Selcting proteincoding genes
+```{r}
+# Protein coding genes only
+filtered_count_data_proteincoding_nafld <- filtered_count_data_alltypes_nafld %>% 
+  filter(Gene.type == "protein_coding") %>% 
+  unite("Geneid",Gene.name,ENS) %>% 
+  separate(Geneid, into = c("Geneid", "ENS"), sep = "_") %>% 
+  mutate(Geneid = ifelse(Geneid == "" | duplicated(Geneid), paste0(Geneid, "_", ENS), Geneid)) %>% 
+  select(Geneid, everything(), -c("ENS", "Gene.type", "Gene.description")) 
+filtered_count_data_proteincoding_nafld
+
+# Convert from df to matrix
+genecounts_sat_order_matrix_proteincoding_nafld <- data.frame(filtered_count_data_proteincoding_nafld[,-1], row.names = filtered_count_data_proteincoding_nafld$Geneid)
+
+# DGE list
+dge_list_proteincoding_nafld <- DGEList(counts=genecounts_sat_order_matrix_proteincoding_nafld, group=glm_group_nafld)
+glm_list_proteincoding_nafld <- calcNormFactors(dge_list_proteincoding_nafld)
+```
+
+## Differential gene expression Analysis
+## Model Fitting: nafld
+### Fit 1: unpaired
+```{r}
+glm_design_nafld <- model.matrix(~ 0 + bwcat_nafld_vist + BMI, metadata_sat_order_matrix_nafld) # 0 means no intercept column and instead a column for each group.
+
+# Add the group names to the columns of our design matrix
+colnames(glm_design_nafld) <- c("LBW_wNAFLD_A", "LBW_wNAFLD_B", "LBW_woNAFLD_A", "LBW_woNAFLD_B", "NBW_woNAFLD_A", "NBW_woNAFLD_B", "BMI")
+
+# Estimate common dispersion
+glm_list_nafld <- estimateDisp(glm_list_nafld, glm_design_nafld, robust=TRUE)
+glm_list_proteincoding_nafld <- estimateDisp(glm_list_proteincoding_nafld, glm_design_nafld, robust=TRUE)
+
+# Fit the generalized log-linear model to count data
+glm_fit_nafld <- glmFit(glm_list_nafld, glm_design_nafld)
+glm_fit_proteincoding_nafld <- glmFit(glm_list_proteincoding_nafld, glm_design_nafld)
+
+# Plot dispersion, BCV shows the root-estimate, i.e., the biological coefficient of variation for each gene.
+plotBCV(glm_list_nafld)
+```
+
+
+
+### Fit 2: paired
+Model for contrasts between the time points A or B
+```{r}
+glm_design_nafld_paired <- model.matrix(~ 0 + bwcat_nafld_vist + BMI + person_id, metadata_sat_order_matrix_nafld)
+
+# Estimate common dispersion
+glm_list_nafld_paired <- estimateDisp(glm_list_nafld, glm_design_nafld_paired, robust=TRUE)
+glm_list_proteincoding_nafld_paired <- estimateDisp(glm_list_proteincoding_nafld, glm_design_nafld_paired, robust=TRUE)
+
+# Fit the generalized log-linear model to count data
+glm_fit_nafld_paired <- glmFit(glm_list_nafld, glm_design_nafld_paired)
+glm_fit_proteincoding_nafld_paired <- glmFit(glm_list_proteincoding_nafld, glm_design_nafld_paired)
+
+# Plot dispersion, BCV shows the root-estimate, i.e., the biological coefficient of variation for each gene.
+plotBCV(glm_list_nafld_paired)
+```
+
+
+
+### A6: Visit (A): LBWwonNAFLD_A vs NBW_A
+```{r}
+# Make the contrast
+cont_A_LBWwoNAFLDvsNBW <- makeContrasts(LBW_woNAFLD_A-NBW_woNAFLD_A,levels=glm_design_nafld)
+
+# glmTreat: all genes
+treat_A_LBWwoNAFLDvsNBW <- glmTreat(glm_fit_nafld, contrast=cont_A_LBWwoNAFLDvsNBW)
+summary(decideTests(treat_A_LBWwoNAFLDvsNBW))
+topTags(treat_A_LBWwoNAFLDvsNBW)
+
+# glmTreat: protein coding
+treat_A_LBWwoNAFLDvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_nafld, contrast=cont_A_LBWwoNAFLDvsNBW)
+summary(decideTests(treat_A_LBWwoNAFLDvsNBW_proteincoding))
+topTags(treat_A_LBWwoNAFLDvsNBW_proteincoding)
+```
+
+#### A6: All genes
+Results table
+```{r}
+tagsTbl_A_LBWwoNAFLDvsNBW <- topTags(treat_A_LBWwoNAFLDvsNBW, n=nrow(treat_A_LBWwoNAFLDvsNBW$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_A_LBWwoNAFLDvsNBW$regulation <- "Not significant"
+tagsTbl_A_LBWwoNAFLDvsNBW$regulation[tagsTbl_A_LBWwoNAFLDvsNBW$logFC > 1 & tagsTbl_A_LBWwoNAFLDvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_A_LBWwoNAFLDvsNBW$regulation[tagsTbl_A_LBWwoNAFLDvsNBW$logFC < -1 & tagsTbl_A_LBWwoNAFLDvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_A_LBWwoNAFLDvsNBW_filtered <- tagsTbl_A_LBWwoNAFLDvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_A_LBWwoNAFLDvsNBW_filtered
+```
+
+Volcanoplot: all genes
+```{r}
+tagsTbl_A_LBWwoNAFLDvsNBW$topDE <- "Not significant"
+tagsTbl_A_LBWwoNAFLDvsNBW$topDE[tagsTbl_A_LBWwoNAFLDvsNBW$logFC > 1 & tagsTbl_A_LBWwoNAFLDvsNBW$FDR < 0.05] <- "Up"
+tagsTbl_A_LBWwoNAFLDvsNBW$topDE[tagsTbl_A_LBWwoNAFLDvsNBW$logFC < -1 & tagsTbl_A_LBWwoNAFLDvsNBW$FDR < 0.05] <- "Down"
+
+ggplot(data=tagsTbl_A_LBWwoNAFLDvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90", "grey","#BE2625")) + 
+    labs(x = 'Log2FC', title = "Baseline (visit A): LBW w/o NAFLD vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-6,6) +
+  ylim(0,2)
+```
+
+
+#### A6: Protein coding
+Results table
+```{r}
+tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding <- topTags(treat_A_LBWwoNAFLDvsNBW_proteincoding, n=nrow(treat_A_LBWwoNAFLDvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Signficant genes: protein coding
+```{r}
+tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$regulation[tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$logFC > 1 & tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Up"
+
+tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$regulation[tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$logFC < -1 & tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_A_LBWwoNAFLDvsNBW_filtered_proteincoding <- tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_A_LBWwoNAFLDvsNBW_filtered_proteincoding
+
+tagsTbl_A_LBWwoNAFLDvsNBW_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  write_csv(paste(path, "data/03_A6_A_LBWwoNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant genes to the plot
+tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$DElabel <- NA
+tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$DElabel[tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding)[tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding$regulation  != "Not significant"]
+
+volcano_A_LBWwoNAFLDvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_A_LBWwoNAFLDvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC') +  #, title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,6) +
+  theme_classic()
+
+volcano_A_LBWwoNAFLDvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A6_A_LBWwoNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_A_LBWwoNAFLDvsNBW_rnaseq_proteincoding, device = "png", width = 7.5, height = 5)
+```
+
+
+### A7: Visit (A): LBWwNAFLD_A vs NBW_A
+```{r}
+# Make the contrast
+cont_A_LBWwNAFLDvsNBW <- makeContrasts(LBW_wNAFLD_A-NBW_woNAFLD_A,levels=glm_design_nafld)
+
+# glmTreat: all genes
+treat_A_LBWwNAFLDvsNBW <- glmTreat(glm_fit_nafld, contrast=cont_A_LBWwNAFLDvsNBW)
+summary(decideTests(treat_A_LBWwNAFLDvsNBW))
+topTags(treat_A_LBWwNAFLDvsNBW)
+
+# glmTreat: protein coding
+treat_A_LBWwNAFLDvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_nafld, contrast=cont_A_LBWwNAFLDvsNBW)
+summary(decideTests(treat_A_LBWwNAFLDvsNBW_proteincoding))
+topTags(treat_A_LBWwNAFLDvsNBW_proteincoding)
+```
+
+
+#### A7: All genes
+Results table
+```{r}
+tagsTbl_A_LBWwNAFLDvsNBW <- topTags(treat_A_LBWwNAFLDvsNBW, n=nrow(treat_A_LBWwNAFLDvsNBW$table), adjust.method="fdr")$table
+```
+
+Volcanoplot: all genes 
+```{r}
+tagsTbl_A_LBWwNAFLDvsNBW$topDE <- "Not significant"
+tagsTbl_A_LBWwNAFLDvsNBW$topDE[tagsTbl_A_LBWwNAFLDvsNBW$logFC > 1 & tagsTbl_A_LBWwNAFLDvsNBW$FDR < 0.05] <- "Up"
+tagsTbl_A_LBWwNAFLDvsNBW$topDE[tagsTbl_A_LBWwNAFLDvsNBW$logFC < -1 & tagsTbl_A_LBWwNAFLDvsNBW$FDR < 0.05] <- "Down"
+
+ggplot(data=tagsTbl_A_LBWwNAFLDvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90","grey","#BE2625")) + 
+    labs(x = 'Log2FC', title = "Baseline (visit A): LBW w/o NAFLD vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-6,6) +
+  ylim(0,2)
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_A_LBWwNAFLDvsNBW$regulation <- "Not significant"
+tagsTbl_A_LBWwNAFLDvsNBW$regulation[tagsTbl_A_LBWwNAFLDvsNBW$logFC > 1 & tagsTbl_A_LBWwNAFLDvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_A_LBWwNAFLDvsNBW$regulation[tagsTbl_A_LBWwNAFLDvsNBW$logFC < -1 & tagsTbl_A_LBWwNAFLDvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_A_LBWwNAFLDvsNBW_filtered <- tagsTbl_A_LBWwNAFLDvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_A_LBWwNAFLDvsNBW_filtered
+```
+
+
+#### A7: Protein coding
+Results table
+```{r}
+tagsTbl_A_LBWwNAFLDvsNBW_proteincoding <- topTags(treat_A_LBWwNAFLDvsNBW_proteincoding, n=nrow(treat_A_LBWwNAFLDvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$regulation[tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$logFC > 1 & tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Up"
+
+tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$regulation[tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$logFC < -1 & tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_A_LBWwNAFLDvsNBW_filtered_proteincoding <- tagsTbl_A_LBWwNAFLDvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_A_LBWwNAFLDvsNBW_filtered_proteincoding
+
+tagsTbl_A_LBWwNAFLDvsNBW_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  write_csv(paste(path, "data/03_A7_A_LBWwNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$DElabel <- NA
+tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$DElabel[tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_A_LBWwNAFLDvsNBW_proteincoding)[tagsTbl_A_LBWwNAFLDvsNBW_proteincoding$regulation  != "Not significant"]
+
+volcano_A_LBWwNAFLDvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_A_LBWwNAFLDvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC') +  #, title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,6) +
+  theme_classic()
+
+volcano_A_LBWwNAFLDvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A7_A_LBWwNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_A_LBWwNAFLDvsNBW_rnaseq_proteincoding, device = "png", width = 7.5, height = 5)
+```
+
+
+### A8: Visit (B): LBWwoNAFLD_B vs NBW_B
+```{r}
+# Make the contrast
+cont_B_LBWwoNAFLDvsNBW <- makeContrasts(LBW_woNAFLD_B-NBW_woNAFLD_B,levels=glm_design_nafld)
+
+# glmTreat: all genes
+treat_B_LBWwoNAFLDvsNBW <- glmTreat(glm_fit_nafld, contrast=cont_B_LBWwoNAFLDvsNBW)
+summary(decideTests(treat_B_LBWwoNAFLDvsNBW))
+topTags(treat_B_LBWwoNAFLDvsNBW)
+
+# glmTreat: protein coding
+treat_B_LBWwoNAFLDvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_nafld, contrast=cont_B_LBWwoNAFLDvsNBW)
+summary(decideTests(treat_B_LBWwoNAFLDvsNBW_proteincoding))
+topTags(treat_B_LBWwoNAFLDvsNBW_proteincoding)
+```
+
+
+#### A8: All genes
+Result table
+```{r}
+tagsTbl_B_LBWwoNAFLDvsNBW <- topTags(treat_B_LBWwoNAFLDvsNBW, n=nrow(treat_B_LBWwoNAFLDvsNBW$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_B_LBWwoNAFLDvsNBW$regulation <- "Not significant"
+tagsTbl_B_LBWwoNAFLDvsNBW$regulation[tagsTbl_B_LBWwoNAFLDvsNBW$logFC > 1 & tagsTbl_B_LBWwoNAFLDvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_B_LBWwoNAFLDvsNBW$regulation[tagsTbl_B_LBWwoNAFLDvsNBW$logFC < -1 & tagsTbl_B_LBWwoNAFLDvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_B_LBWwoNAFLDvsNBW_filtered <- tagsTbl_B_LBWwoNAFLDvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_B_LBWwoNAFLDvsNBW_filtered
+```
+
+Volcanoplot: all genes
+```{r}
+tagsTbl_B_LBWwoNAFLDvsNBW$topDE <- "Not significant"
+tagsTbl_B_LBWwoNAFLDvsNBW$topDE[tagsTbl_B_LBWwoNAFLDvsNBW$logFC > 1 & tagsTbl_B_LBWwoNAFLDvsNBW$FDR < 0.05] <- "Up"
+tagsTbl_B_LBWwoNAFLDvsNBW$topDE[tagsTbl_B_LBWwoNAFLDvsNBW$logFC < -1 & tagsTbl_B_LBWwoNAFLDvsNBW$FDR < 0.05] <- "Down"
+
+ggplot(data=tagsTbl_B_LBWwoNAFLDvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey","#BE2625")) + 
+    labs(x = 'Log2FC', title = "Overfeeding (visit B): LBW w/o NAFLD vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-6,6) +
+  ylim(0,2)
+```
+
+
+#### A8: Protein coding
+Result table: protein coding
+```{r}
+tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding <- topTags(treat_B_LBWwoNAFLDvsNBW_proteincoding, n=nrow(treat_B_LBWwoNAFLDvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$regulation[tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$logFC > 1 & tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Up"
+
+tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$regulation[tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$logFC < -1 & tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_B_LBWwoNAFLDvsNBW_filtered_proteincoding <- tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_B_LBWwoNAFLDvsNBW_filtered_proteincoding
+
+tagsTbl_B_LBWwoNAFLDvsNBW_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  write_csv(paste(path, "data/03_A8_B_LBWwoNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$DElabel <- NA
+tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$DElabel[tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding)[tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding$regulation  != "Not significant"]
+
+volcano_B_LBWwoNAFLDvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_B_LBWwoNAFLDvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC') +  #, title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,6) +
+  theme_classic()
+
+volcano_B_LBWwoNAFLDvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A8_B_LBWwoNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_B_LBWwoNAFLDvsNBW_rnaseq_proteincoding, device = "png", width = 7.5, height = 5)
+```
+
+
+
+### A9: Visit (B): LBWwNAFLD_B vs NBW_B
+```{r}
+# Make the contrast
+cont_B_LBWwNAFLDvsNBW <- makeContrasts(LBW_wNAFLD_B-NBW_woNAFLD_B,levels=glm_design_nafld)
+
+# glmTreat: all genes 
+treat_B_LBWwNAFLDvsNBW <- glmTreat(glm_fit_nafld, contrast=cont_B_LBWwNAFLDvsNBW)
+summary(decideTests(treat_B_LBWwNAFLDvsNBW))
+topTags(treat_B_LBWwNAFLDvsNBW)
+
+# glmTreat: protein coding
+treat_B_LBWwNAFLDvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_nafld, contrast=cont_B_LBWwNAFLDvsNBW)
+summary(decideTests(treat_B_LBWwNAFLDvsNBW_proteincoding))
+topTags(treat_B_LBWwNAFLDvsNBW_proteincoding)
+```
+
+#### A9: All genes
+Result table: all genes
+```{r}
+tagsTbl_B_LBWwNAFLDvsNBW <- topTags(treat_B_LBWwNAFLDvsNBW, n=nrow(treat_B_LBWwNAFLDvsNBW$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_B_LBWwNAFLDvsNBW$regulation <- "Not significant"
+tagsTbl_B_LBWwNAFLDvsNBW$regulation[tagsTbl_B_LBWwNAFLDvsNBW$logFC > 1 & tagsTbl_B_LBWwNAFLDvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_B_LBWwNAFLDvsNBW$regulation[tagsTbl_B_LBWwNAFLDvsNBW$logFC < -1 & tagsTbl_B_LBWwNAFLDvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_B_LBWwNAFLDvsNBW_filtered <- tagsTbl_B_LBWwNAFLDvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_B_LBWwNAFLDvsNBW_filtered
+```
+
+Volcano plot: all genes
+```{r}
+tagsTbl_B_LBWwNAFLDvsNBW$topDE <- "Not significant"
+tagsTbl_B_LBWwNAFLDvsNBW$topDE[tagsTbl_B_LBWwNAFLDvsNBW$logFC > 1 & tagsTbl_B_LBWwNAFLDvsNBW$FDR < 0.05] <- "Up"
+tagsTbl_B_LBWwNAFLDvsNBW$topDE[tagsTbl_B_LBWwNAFLDvsNBW$logFC < -1 & tagsTbl_B_LBWwNAFLDvsNBW$FDR < 0.05] <- "Down"
+
+ggplot(data=tagsTbl_B_LBWwNAFLDvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey","#BE2625")) + 
+    labs(x = 'Log2FC', title = "Baseline (visit A): LBW w/o NAFLD vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-6,6) +
+  ylim(0,2)
+```
+
+####A9: Protein coding
+Result table: protein coding
+```{r}
+tagsTbl_B_LBWwNAFLDvsNBW_proteincoding <- topTags(treat_B_LBWwNAFLDvsNBW_proteincoding, n=nrow(treat_B_LBWwNAFLDvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$regulation[tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$logFC > 1 & tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Up"
+
+tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$regulation[tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$logFC < -1 & tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_B_LBWwNAFLDvsNBW_filtered_proteincoding <- tagsTbl_B_LBWwNAFLDvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_B_LBWwNAFLDvsNBW_filtered_proteincoding
+
+tagsTbl_B_LBWwNAFLDvsNBW_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  write_csv(paste(path, "data/03_A9_B_LBWwNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$DElabel <- NA
+tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$DElabel[tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$regulation  != "Not significant"] <- rownames(tagsTbl_B_LBWwNAFLDvsNBW_proteincoding)[tagsTbl_B_LBWwNAFLDvsNBW_proteincoding$regulation  != "Not significant"]
+
+volcano_B_LBWwNAFLDvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_B_LBWwNAFLDvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme(legend.position = "bottom") +
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 2) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2FC') +  #, title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-5,5) +
+  ylim(-0,6) +
+  theme_classic()
+
+volcano_B_LBWwNAFLDvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A9_B_LBWwNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_B_LBWwNAFLDvsNBW_rnaseq_proteincoding, device = "png", width = 7.5, height = 5)
+```
+
+
+### A10: Bwcat_NAFLD (LBWwoNAFLD): B vs A
+```{r}
+# Make the contrast
+con_LBWwoNAFLD_BvsA <- makeContrasts(bwcat_nafld_vistLBW_woNAFLD_B-bwcat_nafld_vistLBW_woNAFLD_A, levels=glm_design_nafld_paired)
+
+# glmTreat: all genes
+treat_LBWwoNAFLD_BvsA <- glmTreat(glm_fit_nafld_paired, contrast=con_LBWwoNAFLD_BvsA)
+summary(decideTests(treat_LBWwoNAFLD_BvsA))
+topTags(treat_LBWwoNAFLD_BvsA)
+
+# glmTreat: protein coding
+treat_LBWwoNAFLD_BvsA_proteincoding <- glmTreat(glm_fit_proteincoding_nafld_paired, contrast=con_LBWwoNAFLD_BvsA)
+summary(decideTests(treat_LBWwoNAFLD_BvsA_proteincoding))
+topTags(treat_LBWwoNAFLD_BvsA_proteincoding, n = 20)
+```
+
+#### A10: All genes
+Result table: all genes
+```{r}
+tagsTbl_LBWwoNAFLD_BvsA <- topTags(treat_LBWwoNAFLD_BvsA, n=nrow(treat_LBWwoNAFLD_BvsA$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes 
+```{r}
+tagsTbl_LBWwoNAFLD_BvsA$regulation <- "Not significant"
+tagsTbl_LBWwoNAFLD_BvsA$regulation[tagsTbl_LBWwoNAFLD_BvsA$logFC > 1 & tagsTbl_LBWwoNAFLD_BvsA$PValue < 0.05] <- "Up"
+tagsTbl_LBWwoNAFLD_BvsA$regulation[tagsTbl_LBWwoNAFLD_BvsA$logFC < -1 & tagsTbl_LBWwoNAFLD_BvsA$PValue < 0.05] <- "Down"
+
+tagsTbl_LBWwoNAFLD_BvsA_filtered <- tagsTbl_LBWwoNAFLD_BvsA %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_LBWwoNAFLD_BvsA_filtered
+```
+
+Volcano plot: all genes
+```{r}
+tagsTbl_LBWwoNAFLD_BvsA$topDE <- "Not significant"
+tagsTbl_LBWwoNAFLD_BvsA$topDE[tagsTbl_LBWwoNAFLD_BvsA$logFC > 1 & tagsTbl_LBWwoNAFLD_BvsA$FDR < 0.1] <- "Up"
+tagsTbl_LBWwoNAFLD_BvsA$topDE[tagsTbl_LBWwoNAFLD_BvsA$logFC < -1 & tagsTbl_LBWwoNAFLD_BvsA$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_LBWwoNAFLD_BvsA, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey")) + 
+    labs(x = 'Log2FC', title = "LBWwoNAFLD group: visit B vs. A") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-16,16) +
+  ylim(-1,16)
+```
+
+
+#### A10: Protein coding
+Result table: protein coding
+```{r}
+tagsTbl_LBWwoNAFLD_BvsA_proteincoding <- topTags(treat_LBWwoNAFLD_BvsA_proteincoding, n=nrow(treat_LBWwoNAFLD_BvsA_proteincoding$table), adjust.method="fdr")$table %>% 
+  mutate(Genes = rownames(.))
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_LBWwoNAFLD_BvsA_proteincoding$regulation <- "Not significant"
+tagsTbl_LBWwoNAFLD_BvsA_proteincoding$regulation[tagsTbl_LBWwoNAFLD_BvsA_proteincoding$logFC > 1 & tagsTbl_LBWwoNAFLD_BvsA_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_LBWwoNAFLD_BvsA_proteincoding$regulation[tagsTbl_LBWwoNAFLD_BvsA_proteincoding$logFC < -1 & tagsTbl_LBWwoNAFLD_BvsA_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_LBWwoNAFLD_BvsA_filtered_proteincoding <- tagsTbl_LBWwoNAFLD_BvsA_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_LBWwoNAFLD_BvsA_filtered_proteincoding
+
+tagsTbl_LBWwoNAFLD_BvsA_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  write_csv(paste(path, "data/03_A10_LBWwoNAFLD_BvsA_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_LBWwoNAFLD_BvsA_proteincoding$DElabel <- ifelse(tagsTbl_LBWwoNAFLD_BvsA_proteincoding$PValue < 0.05 & (tagsTbl_LBWwoNAFLD_BvsA_proteincoding$logFC > 1 | tagsTbl_LBWwoNAFLD_BvsA_proteincoding$logFC < -1), rownames(tagsTbl_LBWwoNAFLD_BvsA_proteincoding), NA)
+
+volcano_LBWwoNAFLD_BvsA_rnaseq_proteincoding <- ggplot(data=tagsTbl_LBWwoNAFLD_BvsA_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom",
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 17), 
+        legend.text = element_text(size = 15),
+        title = element_text(size = 15))+
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2 Fold Change', title = "LBW w/o NAFLD") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) 
+ #   xlim(-4.4,2) +
+#  ylim(-0,4) 
+
+volcano_LBWwoNAFLD_BvsA_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A10_LBWwoNAFLD_BvsA_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_LBWwoNAFLD_BvsA_rnaseq_proteincoding, device = "png", width = 6.5, height = 7)
+
+# TIFF file
+tiff(file = paste(path, "results/03_volcano_A10_LBWwoNAFLD_BvsA_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=6.5, height=7, res=600, pointsize = 0.0001)
+print(volcano_LBWwoNAFLD_BvsA_rnaseq_proteincoding)
+dev.off()
+```
+
+
+### A11: Bwcat_NAFLD (LBWwNAFLD): B vs A
+```{r}
+# Make the contrast
+con_LBWwNAFLD_BvsA <- makeContrasts(bwcat_nafld_vistLBW_wNAFLD_B-bwcat_nafld_vistLBW_wNAFLD_A, levels=glm_design_nafld_paired)
+
+# glmTreat: all genes
+treat_LBWwNAFLD_BvsA <- glmTreat(glm_fit_nafld_paired, contrast=con_LBWwNAFLD_BvsA)
+summary(decideTests(treat_LBWwNAFLD_BvsA))
+topTags(treat_LBWwNAFLD_BvsA)
+
+# glmTreat: protein coding
+treat_LBWwNAFLD_BvsA_proteincoding <- glmTreat(glm_fit_proteincoding_nafld_paired, contrast=con_LBWwNAFLD_BvsA)
+summary(decideTests(treat_LBWwNAFLD_BvsA_proteincoding))
+topTags(treat_LBWwNAFLD_BvsA_proteincoding)
+```
+
+#### A11: All genes
+Result table: all genes
+```{r}
+tagsTbl_LBWwNAFLD_BvsA <- topTags(treat_LBWwNAFLD_BvsA, n=nrow(treat_LBWwNAFLD_BvsA$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_LBWwNAFLD_BvsA$regulation <- "Not significant"
+tagsTbl_LBWwNAFLD_BvsA$regulation[tagsTbl_LBWwNAFLD_BvsA$logFC > 1 & tagsTbl_LBWwNAFLD_BvsA$PValue < 0.05] <- "Up"
+tagsTbl_LBWwNAFLD_BvsA$regulation[tagsTbl_LBWwNAFLD_BvsA$logFC < -1 & tagsTbl_LBWwNAFLD_BvsA$PValue < 0.05] <- "Down"
+
+tagsTbl_LBWwNAFLD_BvsA_filtered <- tagsTbl_LBWwNAFLD_BvsA %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_LBWwNAFLD_BvsA_filtered
+```
+
+Volcano plot: all genes
+```{r}
+tagsTbl_LBWwNAFLD_BvsA$topDE <- "Not significant"
+tagsTbl_LBWwNAFLD_BvsA$topDE[tagsTbl_LBWwNAFLD_BvsA$logFC > 1 & tagsTbl_LBWwNAFLD_BvsA$FDR < 0.1] <- "Up"
+tagsTbl_LBWwNAFLD_BvsA$topDE[tagsTbl_LBWwNAFLD_BvsA$logFC < -1 & tagsTbl_LBWwNAFLD_BvsA$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_LBWwNAFLD_BvsA, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("#283A90","grey","#BE2625")) + 
+    labs(x = 'Log2FC', title = "LBWwoNAFLD group: visit B vs. A") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-16,16) +
+  ylim(-1,16)
+```
+
+
+#### A11: Protein coding
+Result table: protein coding
+```{r}
+tagsTbl_LBWwNAFLD_BvsA_proteincoding <- topTags(treat_LBWwNAFLD_BvsA_proteincoding, n=nrow(treat_LBWwNAFLD_BvsA_proteincoding$table), adjust.method="fdr")$table %>% 
+  mutate(Genes = rownames(.))
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_LBWwNAFLD_BvsA_proteincoding$regulation <- "Not significant"
+tagsTbl_LBWwNAFLD_BvsA_proteincoding$regulation[tagsTbl_LBWwNAFLD_BvsA_proteincoding$logFC > 1 & tagsTbl_LBWwNAFLD_BvsA_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_LBWwNAFLD_BvsA_proteincoding$regulation[tagsTbl_LBWwNAFLD_BvsA_proteincoding$logFC < -1 & tagsTbl_LBWwNAFLD_BvsA_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_LBWwNAFLD_BvsA_filtered_proteincoding <- tagsTbl_LBWwNAFLD_BvsA_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_LBWwNAFLD_BvsA_filtered_proteincoding
+
+tagsTbl_LBWwNAFLD_BvsA_filtered_proteincoding  %>%
+  mutate(geneid_ensid = rownames(.)) %>% 
+  separate(geneid_ensid, into = c("geneid"), sep="_") %>% 
+  write_csv(paste(path, "data/03_A11_LBWwNAFLD_BvsA_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.csv", sep="/")) 
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_LBWwNAFLD_BvsA_proteincoding$DElabel <- ifelse(tagsTbl_LBWwNAFLD_BvsA_proteincoding$PValue < 0.05 & (tagsTbl_LBWwNAFLD_BvsA_proteincoding$logFC > 1 | tagsTbl_LBWwNAFLD_BvsA_proteincoding$logFC < -1), rownames(tagsTbl_LBWwNAFLD_BvsA_proteincoding), NA)
+
+volcano_LBWwNAFLD_BvsA_rnaseq_proteincoding <- ggplot(data=tagsTbl_LBWwNAFLD_BvsA_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+    geom_point() + 
+    theme_classic() + 
+  theme(legend.position = "bottom",
+        axis.title.x = element_text(size = 15),
+        axis.title.y = element_text(size = 15),
+        legend.title = element_text(size = 17), 
+        legend.text = element_text(size = 15),
+        title = element_text(size = 15))+
+    geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 3) +
+    scale_color_manual(values=c("#283A90", "grey", "#BE2625")) + 
+    labs(x = 'Log2 Fold Change', title = "LBW w/ NAFLD") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) 
+ #   xlim(-4.4,2) +
+ # ylim(-0,4) 
+
+volcano_LBWwNAFLD_BvsA_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A11_LBWwNAFLD_BvsA_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_LBWwNAFLD_BvsA_rnaseq_proteincoding, device = "png", width = 6.5, height = 7)
+
+# TIFF file
+tiff(file = paste(path, "results/03_volcano_A11_LBWwNAFLD_BvsA_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=6.5, height=7, res=600, pointsize = 0.0001)
+print(volcano_LBWwNAFLD_BvsA_rnaseq_proteincoding)
+dev.off()
+```
+
+### A12: Delta contrast LBWwoNAFLD(AB) vs. NBW(AB)
+This contrast is between the LBW and NBW levels of the bwcat factor.
+```{r}
+# Make the contrast
+con_deltaAB_LBWwoNAFLDvsNBW <- makeContrasts(visit = (bwcat_nafld_vistLBW_woNAFLD_B-bwcat_nafld_vistLBW_woNAFLD_A)-(bwcat_nafld_vistNBW_woNAFLD_B-bwcat_nafld_vistNBW_woNAFLD_A),levels=glm_design_nafld_paired)
+
+# glmTreat: all genes
+treat_deltaAB_LBWwoNAFLDvsNBW <- glmTreat(glm_fit_nafld_paired, contrast=con_deltaAB_LBWwoNAFLDvsNBW)
+summary(decideTests(treat_deltaAB_LBWwoNAFLDvsNBW))
+topTags(treat_deltaAB_LBWwoNAFLDvsNBW)
+
+# glmTreat: protein coding
+treat_deltaAB_LBWwoNAFLDvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_nafld_paired, contrast=con_deltaAB_LBWwoNAFLDvsNBW)
+summary(decideTests(treat_deltaAB_LBWwoNAFLDvsNBW_proteincoding))
+topTags(treat_deltaAB_LBWwoNAFLDvsNBW_proteincoding)
+```
+
+#### A12: All genes
+Result table: all genes
+```{r}
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW <- topTags(treat_deltaAB_LBWwoNAFLDvsNBW, n=nrow(treat_deltaAB_LBWwoNAFLDvsNBW$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW$regulation <- "Not significant"
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW$regulation[tagsTbl_deltaAB_LBWwoNAFLDvsNBW$logFC > 1 & tagsTbl_deltaAB_LBWwoNAFLDvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW$regulation[tagsTbl_deltaAB_LBWwoNAFLDvsNBW$logFC < -1 & tagsTbl_deltaAB_LBWwoNAFLDvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_filtered <- tagsTbl_deltaAB_LBWwoNAFLDvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_filtered
+```
+
+Volcano plot: all genes
+```{r}
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW$topDE <- "Not significant"
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW$topDE[tagsTbl_deltaAB_LBWwoNAFLDvsNBW$logFC > 1 & tagsTbl_deltaAB_LBWwoNAFLDvsNBW$FDR < 0.1] <- "Up"
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW$topDE[tagsTbl_deltaAB_LBWwoNAFLDvsNBW$logFC < -1 & tagsTbl_deltaAB_LBWwoNAFLDvsNBW$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_deltaAB_LBWwoNAFLDvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-3,3) +
+  ylim(-0,3)
+```
+
+#### A12: Protein codings
+Result table: protein coding
+```{r}
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW <- topTags(treat_deltaAB_LBWwoNAFLDvsNBW, n=nrow(treat_deltaAB_LBWwoNAFLDvsNBW$table), adjust.method="fdr")$table
+
+# protein coding
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding <- topTags(treat_deltaAB_LBWwoNAFLDvsNBW_proteincoding, n=nrow(treat_deltaAB_LBWwoNAFLDvsNBW_proteincoding$table), adjust.method="fdr")$table 
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$regulation[tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$logFC > 1 & tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$regulation[tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$logFC < -1 & tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_filtered_proteincoding <- tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%
+  select(logFC, logCPM, PValue, FDR, regulation) 
+
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_filtered_proteincoding
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$DElabel <- ifelse(tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$PValue < 0.05 & (tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$logFC > 1 | tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding$logFC < -1), rownames(tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding), NA)
+
+desired_order <- c("Up", "Down", "Not significant")
+volcano_deltaAB_LBWwoNAFLDvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_deltaAB_LBWwoNAFLDvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-3.5,3.5) +
+  ylim(-0,3.5) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "Delta changes: LBW w/o NAFLD vs NBW") 
+  
+
+volcano_deltaAB_LBWwoNAFLDvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A12_deltaAB_LBWwoNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_deltaAB_LBWwoNAFLDvsNBW_rnaseq_proteincoding, device = "png", width = 6, height = 7.5)
+```
+
+
+
+
+### A13: Delta contrast LBWwNAFLD(AB) vs. NBW(AB)
+```{r}
+# Make the contrast
+con_deltaAB_LBWwNAFLDvsNBW <- makeContrasts(visit = (bwcat_nafld_vistLBW_wNAFLD_B-bwcat_nafld_vistLBW_wNAFLD_A)-(bwcat_nafld_vistNBW_woNAFLD_B-bwcat_nafld_vistNBW_woNAFLD_A),levels=glm_design_nafld_paired)
+
+# glmTreat: all genes
+treat_deltaAB_LBWwNAFLDvsNBW <- glmTreat(glm_fit_nafld_paired, contrast=con_deltaAB_LBWwNAFLDvsNBW)
+summary(decideTests(treat_deltaAB_LBWwNAFLDvsNBW))
+topTags(treat_deltaAB_LBWwNAFLDvsNBW)
+
+# glmTreat: protein coding
+treat_deltaAB_LBWwNAFLDvsNBW_proteincoding <- glmTreat(glm_fit_proteincoding_nafld_paired, contrast=con_deltaAB_LBWwNAFLDvsNBW)
+summary(decideTests(treat_deltaAB_LBWwNAFLDvsNBW_proteincoding))
+topTags(treat_deltaAB_LBWwNAFLDvsNBW_proteincoding)
+```
+
+#### A13: All genes
+Result table: all genes
+```{r}
+tagsTbl_deltaAB_LBWwNAFLDvsNBW <- topTags(treat_deltaAB_LBWwNAFLDvsNBW, n=nrow(treat_deltaAB_LBWwNAFLDvsNBW$table), adjust.method="fdr")$table
+```
+
+Significant genes: all genes
+```{r}
+tagsTbl_deltaAB_LBWwNAFLDvsNBW$regulation <- "Not significant"
+tagsTbl_deltaAB_LBWwNAFLDvsNBW$regulation[tagsTbl_deltaAB_LBWwNAFLDvsNBW$logFC > 1 & tagsTbl_deltaAB_LBWwNAFLDvsNBW$PValue < 0.05] <- "Up"
+tagsTbl_deltaAB_LBWwNAFLDvsNBW$regulation[tagsTbl_deltaAB_LBWwNAFLDvsNBW$logFC < -1 & tagsTbl_deltaAB_LBWwNAFLDvsNBW$PValue < 0.05] <- "Down"
+
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_filtered <- tagsTbl_deltaAB_LBWwNAFLDvsNBW %>% 
+  filter(regulation != "Not significant")  %>%  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_filtered
+```
+
+Volcano plot: all genes 
+```{r}
+tagsTbl_deltaAB_LBWwNAFLDvsNBW$topDE <- "Not significant"
+tagsTbl_deltaAB_LBWwNAFLDvsNBW$topDE[tagsTbl_deltaAB_LBWwNAFLDvsNBW$logFC > 1 & tagsTbl_deltaAB_LBWwNAFLDvsNBW$FDR < 0.1] <- "Up"
+tagsTbl_deltaAB_LBWwNAFLDvsNBW$topDE[tagsTbl_deltaAB_LBWwNAFLDvsNBW$logFC < -1 & tagsTbl_deltaAB_LBWwNAFLDvsNBW$FDR < 0.1] <- "Down"
+
+ggplot(data=tagsTbl_deltaAB_LBWwNAFLDvsNBW, aes(x=logFC, y=-log10(FDR), color=topDE)) + 
+    geom_point() + 
+    scale_color_manual(values=c("grey", "#BE2625")) + 
+    labs(x = 'Log2FC', title = "Delta (visit AB): LBW vs. NBW") +
+    scale_fill_discrete(breaks=c("Up", "Not significant", "Down")) +
+    xlim(-3,3) +
+  ylim(-0,3)
+```
+
+
+#### A13: Protein coding
+Result table: protein coding
+```{r}
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding <- topTags(treat_deltaAB_LBWwNAFLDvsNBW_proteincoding, n=nrow(treat_deltaAB_LBWwNAFLDvsNBW_proteincoding$table), adjust.method="fdr")$table
+```
+
+Significant genes: protein coding
+```{r}
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$regulation <- "Not significant"
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$regulation[tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$logFC > 1 & tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Up"
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$regulation[tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$logFC < -1 & tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05] <- "Down"
+
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_filtered_proteincoding <- tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding %>% 
+  filter(regulation != "Not significant") %>%  
+  select(logFC, logCPM, PValue, FDR, regulation)
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_filtered_proteincoding
+```
+
+Volcano plot: protein coding
+```{r}
+# Add the significant lipids to the plot
+tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$DElabel <- ifelse(tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$PValue < 0.05 & (tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$logFC > 1 | tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding$logFC < -1), rownames(tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding), NA)
+
+
+desired_order <- c("Up", "Down", "Not significant")
+
+volcano_deltaAB_LBWwNAFLDvsNBW_rnaseq_proteincoding <- ggplot(data=tagsTbl_deltaAB_LBWwNAFLDvsNBW_proteincoding, aes(x=logFC, y=-log10(PValue), color=regulation, label=DElabel)) + 
+  geom_point() + 
+  theme_classic() + 
+  theme(legend.position = "bottom") +
+  geom_text_repel(min.segment.length = Inf, max.overlaps = Inf, size = 4) +
+  scale_color_manual(values = c("Up" = "#BE2625", "Down" = "#283A90", "Not significant" = "grey"), 
+                     breaks = desired_order, 
+                     labels = desired_order) +
+  xlim(-3.5,3.5) +
+  ylim(-0,3.7) +
+  labs(x = 'Log2 Fold Change', color = "Regulation", title = "Delta changes: LBW w/ NAFLD vs NBW") 
+volcano_deltaAB_LBWwNAFLDvsNBW_rnaseq_proteincoding
+
+ggsave(paste(path, "results/03_volcano_A13_deltaAB_LBWwNAFLDvsNBW_BMIadjusted_visitAB_proteincoding_SAT_rnaseq.png", sep="/"), plot = volcano_deltaAB_LBWwNAFLDvsNBW_rnaseq_proteincoding, device = "png", width = 6, height = 7.5)
+```
+
+
+
+# Heatmaps for paper
+```{r}
+A5_topgene <- tagsTbl_deltaAB_LBWvsNBW_filtered_proteincoding %>% 
+  mutate(comparison = "A5_deltaAB_LBWvsNBW") %>% 
+  mutate(Genes = rownames(.)) %>% 
+  select(Genes, comparison, logFC, PValue, FDR, regulation) %>% 
+  rename(Regulation = regulation) %>% 
+  arrange(PValue) %>% 
+  pivot_wider(
+    id_cols = Genes,
+    names_from = comparison,
+    values_from = logFC
+  )
+
+# Create a list of data frames (x) and a list of names (y)
+x <- list(tagsTbl_LBW_BvsA_proteincoding,
+          tagsTbl_NBW_BvsA_proteincoding,
+          tagsTbl_LBWwoNAFLD_BvsA_proteincoding,
+          tagsTbl_LBWwNAFLD_BvsA_proteincoding)
+
+y <- list("A3_LBW_BvsA", "A4_NBW_BvsA", "A10_LBWwoNAFLD_BvsA", "A11_LBWwNAFLD_BvsA") 
+
+result_list <- list()
+
+# Loop over the data frames in x and characters in y
+for (i in seq_along(x)) {
+  result <- x[[i]] %>%
+    mutate(comparison = y[[i]]) %>%
+    select(Genes, comparison, logFC, PValue, FDR, regulation) %>%
+    arrange(PValue) %>%
+    pivot_wider(
+      id_cols = Genes,
+      names_from = comparison,
+      values_from = c(logFC, PValue)
+    )
+  
+  # Name the result data frame after y[i]
+  result_name <- y[[i]]
+  result_list[[result_name]] <- result
+}
+
+# Combine the individual data frames into one table
+combined_df_topgene <- result_list[[1]] 
+for (i in 2:length(result_list)) {
+  combined_df_topgene <- left_join(combined_df_topgene, result_list[[i]], by = "Genes")
+}
+
+combined_df_topgene <- A5_topgene %>% 
+  left_join(combined_df_topgene, by = join_by(Genes)) %>% 
+  select(everything(), -c(Genes, A5_deltaAB_LBWvsNBW)) %>% 
+  as.data.frame()
+rownames(combined_df_topgene) <- A5_topgene$Genes
+combined_df_topgene
+
+  combined_df_topgene %>%
+  select(contains("PValue")) %>% 
+  view()
+```
+
+
+
+
+
+```{r}
+topgene_combined_df_logfc <- combined_df_topgene %>% 
+  select(contains("logFC")) %>% 
+  select(logFC_A4_NBW_BvsA, logFC_A3_LBW_BvsA, logFC_A10_LBWwoNAFLD_BvsA, logFC_A11_LBWwNAFLD_BvsA)
+
+
+heatmap_obj <- Heatmap(topgene_combined_df_logfc, 
+                       col = colorRamp2(c(min(topgene_combined_df_logfc), 0,
+                                          max(topgene_combined_df_logfc)), 
+                                        c("#283A90", "white", "#BE2625")),
+                       name = "Log2 \nFold Changes",
+                       cluster_rows = FALSE,  # To prevent row clustering
+                       column_names_side = "top",
+                       row_names_side = "left",
+                       show_column_names = TRUE,  # To show column names
+                       column_names_rot = 0,
+                       column_names_centered = TRUE,
+                       column_labels = c("NBW", "LBW All","LBW w/o NAFLD", "LBW w/ NAFLD"),
+                       show_row_names = TRUE, # To show row names
+                       cluster_columns = FALSE,
+                       column_names_gp = gpar(fontsize = 8),
+                       row_names_gp = gpar(fontsize = 9), 
+                       show_heatmap_legend = TRUE
+                       ) 
+
+heatmap_obj
+
+# Save the heatmap as a PDF file
+tiff(file = paste(path, "results/03_heatmap_deltagenes_A3_A4_A10_A11_transcriptomics.tiff", sep="/"),
+    width = 15,
+    height = 10,
+    units = "cm",
+    res = 600)
+
+print(heatmap_obj)
+dev.off()
+```
+
+
+```{r}
+# Create a list of data frames (x) and a list of names (y)
+x <- list(tagsTbl_deltaAB_LBWvsNBW_filtered, #p-val < 0.05 lipids
+          tagsTbl_LBW_BvsA_filtered, #FDR < 0.05 lipids
+          tagsTbl_NBW_BvsA_filtered, #p-val < 0.05 lipids
+          tagsTbl_LBWwoNAFLD_BvsA_filtered, #FDR < 0.05 lipids
+          tagsTbl_LBWwNAFLD_BvsA_filtered) #p-val < 0.05 lipids
+y <- list("A5_delta_LBWvsNBW",
+          "A3_LBW_BvsA", 
+          "A4_NBW_BvsA", 
+          "A10_LBWwoNAFLD_BvsA", 
+          "A11_LBWwNAFLD_BvsA")
+
+combined_df_topgenes <- bind_rows(
+  map2(x, y, ~mutate(.x, comparison = .y)),
+  .id = "source"  # Add a column to identify the source of each row
+)
+
+combined_df_topgenes <- combined_df_topgenes %>% 
+  mutate(logFC=round(logFC, digits = 4), P.Value=round(PValue, digits = 4), adj.P.Val=round(FDR, digits = 4)) %>% 
+  write_tsv(paste(path, "data/02_toplipids_A5A3A4A10A11_transcriptomics.tsv", sep="/")) 
+```
+
+
+

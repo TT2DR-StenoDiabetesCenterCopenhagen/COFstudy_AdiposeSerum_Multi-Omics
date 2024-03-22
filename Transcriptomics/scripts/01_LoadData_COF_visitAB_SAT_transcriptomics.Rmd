@@ -1,0 +1,45 @@
+---
+title: "Transcriptomics COF study"
+subtitle: "Load and Save Raw Data"
+author: "Sofie Olund Villumsen"
+date: "2023"
+output: html_document
+---
+
+Clear workspace
+```{r}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE}
+library(readr)
+library(readxl)
+library(tidyverse)
+```
+
+Set wd 
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics/"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+genecounts_data     <- read.delim(paste(path, "data/raw_data/RNA_seq_GeneCounts_tissueANDpreadipocytes.txt", sep="/")) %>% 
+  write_csv(paste(path, "data/01_genecounts_all.csv", sep="/"))
+
+preadipocyte_data   <- read_xlsx(paste(path, "data/raw_data/preadipocytes_phenodata.xlsx", sep="/")) %>% 
+  write_csv(paste(path, "data/01_preadipocytes_phenodata.csv", sep="/"))
+
+adiposetissue_data  <- read_xlsx(paste(path, "data/raw_data/adiposetissue_phenodata.xlsx", sep="/")) %>% 
+  write_csv(paste(path, "data/01_adiposetissue_phenodata.csv", sep="/"))
+
+adiposetissue_data  <- read_xlsx(paste(path, "data/raw_data/adiposetissue_phenodata.xlsx", sep="/"), sheet = "isoleringsdato") %>% 
+  write_csv(paste(path, "data/01_adiposetissue_phenodata_isoleringsdato.csv", sep="/"))
+
+clinical_data       <- read_xlsx(paste(path, "data/raw_data/hcof_clinical_data.xlsx", sep="/")) %>% 
+  write_csv(paste(path, "data/01_clinical_data.csv", sep="/"))
+```
+
