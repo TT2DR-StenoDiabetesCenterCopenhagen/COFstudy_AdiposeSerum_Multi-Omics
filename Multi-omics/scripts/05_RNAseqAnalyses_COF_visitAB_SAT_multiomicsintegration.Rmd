@@ -1,0 +1,263 @@
+---
+title: "Multi-omics COF study"
+subtitle: "Multi-omics analsysis and differential gene expressions on samples from the subcutaneous adipose tissue (SAT) from visit A and B (LBW vs NBW)"
+author: "Sofie Olund Villumsen"
+date: "11/01/2024"
+output: html_document
+---
+
+# Initial settings
+Clear workspace
+```{r}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE}
+library(readr)
+library(tidyverse)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics/"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r}
+logcpm_values <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Transcriptomics/data/03_transcriptomicsdata_visitAB_logcpm_values.csv")
+```
+
+
+
+# Genes
+## SLC27A2
+```{r}
+# SLC27A2
+genecounts_SLC27A2 <- logcpm_values %>% 
+  filter(Gene.name == "SLC27A2")  %>% 
+  mutate(bwcat_visit = paste(.$bwcat, .$visit, sep= "_"),
+         bwcat_visit_ = case_when(bwcat_visit == "LBW_A" ~ "LBW baseline",
+                                  bwcat_visit == "LBW_B" ~ "LBW COF",
+                                  bwcat_visit == "NBW_A" ~ "NBW baseline",
+                                  bwcat_visit == "NBW_B" ~ "NBW COF"))
+
+genecounts_SLC27A2$bwcat_visit_ <- factor(genecounts_SLC27A2$bwcat_visit_,
+                                               levels = c("NBW baseline", "NBW COF", "LBW baseline", "LBW COF"))
+genecounts_SLC27A2$bwcat <- factor(genecounts_SLC27A2$bwcat,
+                                               levels = c("NBW", "LBW"))
+
+multiomics_boxplot_SLC27A2 <- ggplot(genecounts_SLC27A2, aes(visit, logCPM, fill = bwcat_visit_)) +
+  geom_boxplot(alpha = 0.9) +
+  facet_grid(~factor(bwcat))+
+  scale_fill_manual(values = c("NBW baseline" = "#00AFBB", "NBW COF" = "#045F5F", "LBW baseline" = "#F5BD1E", "LBW COF" = "#F87431")) +
+  scale_x_discrete(labels= c("Baseline", "COF"))+
+  labs(x = '', y = "logCPM", fill = "Group", title = "SLC27A2") +
+  theme_classic(base_size = 16) +
+  theme(strip.text.x = element_blank(), plot.background = element_blank(),panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), strip.background = element_blank(),panel.border = element_blank(),
+        axis.text.x = element_text(size = 17),
+        axis.title.x = element_text(size = 20),
+        legend.text = element_text(size = 17),
+        legend.title = element_text(size = 20)) 
+multiomics_boxplot_SLC27A2
+
+ggsave(paste(path, "results/05_boxplot_multiomics_SLC27A2_v1_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.png", sep="/"), plot = multiomics_boxplot_SLC27A2, device = "png", width = 10, height = 6.5)
+
+# TIFF file
+tiff(file = paste(path, "results/05_boxplot_multiomics_SLC27A2_v1_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=10, height=6.5, res=600, pointsize = 0.0001)
+print(multiomics_boxplot_SLC27A2)
+dev.off()
+
+
+multiomics_boxplot_SLC27A2_v2 <- ggplot(genecounts_SLC27A2, aes(visit, logCPM, fill = bwcat)) +
+  geom_boxplot(alpha = 0.9) +
+  facet_grid(~factor(bwcat))+
+  scale_fill_manual(values = c("NBW" = "#008085", "LBW" = "#F5BD1E")) +
+  scale_x_discrete(labels= c("Baseline", "COF"))+
+  labs(x = '', y = "logCPM", fill = "Group", title = "SLC27A2") +
+  theme_classic(base_size = 16) +
+  theme(strip.text.x = element_blank(), plot.background = element_blank(),panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), strip.background = element_blank(),panel.border = element_blank()) 
+multiomics_boxplot_SLC27A2_v2
+
+ggsave(paste(path, "results/05_boxplot_multiomics_SLC27A2_v2_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.png", sep="/"), plot = multiomics_boxplot_SLC27A2_v2, device = "png", width = 10, height = 6.5)
+```
+
+
+## FADS2
+```{r}
+#FADS2
+genecounts_FADS2 <- logcpm_values %>% 
+  filter(Gene.name == "FADS2")  %>% 
+  mutate(bwcat_visit = paste(.$bwcat, .$visit, sep= "_"),
+         bwcat_visit_ = case_when(bwcat_visit == "LBW_A" ~ "LBW baseline",
+                                  bwcat_visit == "LBW_B" ~ "LBW COF",
+                                  bwcat_visit == "NBW_A" ~ "NBW baseline",
+                                  bwcat_visit == "NBW_B" ~ "NBW COF"))
+
+genecounts_FADS2$bwcat_visit_ <- factor(genecounts_FADS2$bwcat_visit_,
+                                               levels = c("NBW baseline", "NBW COF", "LBW baseline", "LBW COF"))
+genecounts_FADS2$bwcat <- factor(genecounts_FADS2$bwcat,
+                                               levels = c("NBW", "LBW"))
+
+multiomics_boxplot_FADS2 <- ggplot(genecounts_FADS2, aes(visit, logCPM, fill = bwcat_visit_)) +
+  geom_boxplot(alpha = 0.9) +
+  facet_grid(~factor(bwcat))+
+  scale_fill_manual(values = c("LBW baseline" = "#F5BD1E", "LBW COF" = "#F87431", "NBW baseline" = "#00AFBB", "NBW COF" = "#045F5F")) +
+  scale_x_discrete(labels= c("Baseline", "COF"))+
+  labs(x = '', y = "logCPM", fill = "Group", title = "FADS2") +
+  theme_classic(base_size = 16) +
+  theme(strip.text.x = element_blank(), plot.background = element_blank(),panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), strip.background = element_blank(),panel.border = element_blank(),
+        axis.text.x = element_text(size = 17),
+        axis.title.x = element_text(size = 20),
+        legend.text = element_text(size = 17),
+        legend.title = element_text(size = 20)) 
+multiomics_boxplot_FADS2
+
+ggsave(paste(path, "results/05_boxplot_multiomics_FADS2_v1_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.png", sep="/"), plot = multiomics_boxplot_FADS2, device = "png", width = 10, height = 6.5)
+
+# TIFF file
+tiff(file = paste(path, "results/05_boxplot_multiomics_FADS2_v1_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=10, height=6.5, res=600, pointsize = 0.0001)
+print(multiomics_boxplot_FADS2)
+dev.off()
+
+
+
+multiomics_boxplot_FADS2_v2 <- ggplot(genecounts_FADS2, aes(visit, logCPM, fill = bwcat)) +
+  geom_boxplot(alpha = 0.9) +
+  facet_grid(~factor(bwcat))+
+  scale_fill_manual(values = c("NBW" = "#008085", "LBW" = "#F5BD1E")) +
+  scale_x_discrete(labels= c("Baseline", "COF"))+
+  labs(x = '', y = "logCPM", fill = "Group", title = "FADS2") +
+  theme_classic(base_size = 16) +
+  theme(strip.text.x = element_blank(), plot.background = element_blank(),panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), strip.background = element_blank(),panel.border = element_blank()) 
+multiomics_boxplot_FADS2_v2
+
+ggsave(paste(path, "results/05_boxplot_multiomics_FADS2_v2_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.png", sep="/"), plot = multiomics_boxplot_FADS2_v2, device = "png", width = 10, height = 6.5)
+```
+
+
+
+
+
+
+# Multiomics: PPAR signaling pathway
+```{r}
+ppar_genelist <- list("AQP7B", "NR1H3", "SORBS1", "ME3", "SLC27A5", "SLC27A4", "SLC27A2",
+                      "PLIN2", "CPT1C", "CPT1A", "CPT1B", "CPT2", "CYP27A1", "DBI", "EHHADH",
+                      "FABP4", "FABP3", "FABP5", "ACSL1", "ACSL3", "ACSL4", "ACSBG1", "GK",
+                      "ACAA1", "HMGCS1", "ACADL", "ACADM", "ILK", "AQP7", "SLC27A1", "LPL",
+                      "ME1", "PLIN5", "ACOX1", "PCK1", "PCK2", "ANGPTL4", "PDPK1", "ACSL5",
+                      "PLIN1", "PLTP", "PPARA", "PPARD", "PPARG", "RXRA", "RXRB", "RXRG", "SCD",
+                      "SCP2", "PLIN4", "UBC", "SCD5", "ACOX2", "ACOX3", "ADIPOQ", "FADS2", "CD36")
+
+ppar_genelist_logCMP <- logcpm_values %>% 
+  filter(Gene.name %in% ppar_genelist) %>% 
+  mutate(bwcat_visit = paste(.$bwcat, .$visit, sep= "_"),
+         bwcat_visit_ = case_when(bwcat_visit == "LBW_A" ~ "LBW baseline",
+                                  bwcat_visit == "LBW_B" ~ "LBW COF",
+                                  bwcat_visit == "NBW_A" ~ "NBW baseline",
+                                  bwcat_visit == "NBW_B" ~ "NBW COF"))
+ppar_genelist_logCMP
+```
+
+## Boxplot overview 1
+```{r}
+# Create boxplots using ggplot2
+ggplot(ppar_genelist_logCMP, aes(x = Gene.name, y = logCPM, fill = bwcat_visit_)) +
+  geom_boxplot() +
+  facet_wrap(~ bwcat_visit_, scales = "free_y", ncol = 1) +
+  labs(title = "Boxplots of logCPM values for each Gene.name",
+       x = "Gene.name",
+       y = "logCPM") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+```
+
+## Boxplot overview 2
+```{r}
+# Create boxplots for each Gene.name
+plot_multiomics2 <- ggplot(ppar_genelist_logCMP, aes(x = Gene.name, y = logCPM, fill = bwcat_visit_)) +
+  geom_boxplot(position = "dodge", width = 0.8) +
+  labs(title = "Boxplots of logCPM values pr. gene",
+       x = "Gene.name",
+       y = "logCPM") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotate x-axis labels for better readability
+
+# TIFF file
+#tiff(file = paste(path, "results/05_boxplots_PPARpathwaygenes_multiomics_NBWvsLBW_visitAvsB_proteincoding_SAT_rnaseq.tiff", sep="/"), units="in", width=10, height=100, res=600, pointsize = 0.0001)
+#print(plot_multiomics2)
+#dev.off()
+```
+
+## Differences
+```{r}
+# Group by relevant variables and calculate mean logCPM for each group
+summary_data <- ppar_genelist_logCMP %>%
+  group_by(Gene.name, bwcat_visit_) %>%
+  summarise(mean_logCPM = mean(logCPM))
+
+# Pivot the table to have separate columns for baseline and after COF
+summary_pivoted <- summary_data %>%
+  pivot_wider(names_from = bwcat_visit_, values_from = mean_logCPM) 
+summary_pivoted
+
+gene_df <- summary_pivoted %>%
+  summarize(baseline_diff = `LBW baseline` - `NBW baseline`,
+            COF_diff      = `LBW COF` - `NBW COF`,
+            NBW_diff      = `NBW COF` - `NBW baseline`,
+            LBW_diff      = `LBW COF` - `LBW baseline`)
+
+# Classify the differences
+gene_df <- gene_df %>%
+  mutate(baseline_difftype = ifelse(baseline_diff < 0, "negative", ifelse(baseline_diff == 0, "neutral", "pos")),
+         COF_difftype = ifelse(COF_diff < 0, "negative", ifelse(COF_diff == 0, "neutral", "pos")), 
+         NBW_difftype = ifelse(NBW_diff < 0, "negative", ifelse(NBW_diff == 0, "neutral", "pos")),
+         LBW_difftype = ifelse(LBW_diff < 0, "negative", ifelse(LBW_diff == 0, "neutral", "pos"))) %>% 
+  select(Gene.name, baseline_diff, baseline_difftype, COF_diff, COF_difftype, NBW_diff, NBW_difftype, LBW_diff, LBW_difftype)
+gene_df
+```
+
+## Count positive and negative differences
+```{r}
+count_df <- data.frame(
+  Variable = c("baseline_diff", "COF_diff", "NBW_diff", "LBW_diff"),
+  negative_count = c(sum(gene_df$baseline_difftype == "negative"), 
+                     sum(gene_df$COF_difftype == "negative"), 
+                     sum(gene_df$NBW_difftype == "negative"),
+                     sum(gene_df$LBW_difftype == "negative")),
+  positive_count = c(sum(gene_df$baseline_difftype == "pos"), 
+                sum(gene_df$COF_difftype == "pos"),
+                sum(gene_df$NBW_difftype == "pos"),
+                sum(gene_df$LBW_difftype == "pos"))
+)
+count_df
+```
+
+
+# Fishers exact test
+```{r}
+# Create a 2x2 contingency table
+fishers_table <- matrix(c(43, 14, 36, 21), nrow = 2)
+
+# Print the observed table
+print("Observed Contingency Table:")
+print(fishers_table)
+
+# Perform Fisher's exact test
+fisher_result <- fisher.test(fishers_table)
+
+# Print the results
+print("Fisher's Exact Test Results:")
+print(fisher_result)
+
+# Extract the p-value from the results
+p_value <- fisher_result$p.value
+print(paste("P-value:", p_value))
+```

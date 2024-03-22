@@ -1,0 +1,211 @@
+---
+title: "Multi-Omics Integration Analysis"
+subtitle: "Multi-Omics Data Integration Analyses w/ MOFA2"
+author: "Sofie Olund Villumsen"
+date: "14/06/2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Initial settings
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(MOFA2)
+library(compositions)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+rnaseq_sat_data_visitAB  <- read_csv(paste(path, "data/01_data_genecounts_proteincoding_rnaseq_sat_reducedsamples_visitAB.csv", sep="/"))
+
+metabolomics_data_visitAB  <- read_csv(paste(path, "data/01_data_abundances_metabolomics_allsamples_visitAB.csv", sep="/")) 
+
+lipidomics_data_visitAB  <- read_csv(paste(path, "data/01_data_abundances_lipidomics_allsamples_visitAB.csv", sep="/")) 
+```
+
+Create matrices
+```{r}
+# RNAseq
+rnaseq_sat_data_visitAB_ <- rnaseq_sat_data_visitAB[2:ncol(rnaseq_sat_data_visitAB)] %>% as.matrix() 
+rownames(rnaseq_sat_data_visitAB_) <- rnaseq_sat_data_visitAB$gene_id
+
+# Metabolomics
+metabolomics_data_visitAB_ <- metabolomics_data_visitAB %>% 
+  pivot_longer(cols = -sample_id, names_to = "Metabolites",values_to = "Value") %>% 
+  pivot_wider(names_from = sample_id, values_from = Value) %>% 
+  select(everything(), -Metabolites) %>% 
+  as.matrix()
+rownames(metabolomics_data_visitAB_) <- colnames(metabolomics_data_visitAB[2:ncol(metabolomics_data_visitAB)])
+
+# Lipidomics
+lipidomics_data_visitAB_ <- lipidomics_data_visitAB %>% 
+  pivot_longer(cols = -sample_id, names_to = "Lipids",values_to = "Value") %>% 
+  pivot_wider(names_from = sample_id, values_from = Value) %>% 
+  select(everything(), -Lipids) %>% 
+  as.matrix()
+rownames(lipidomics_data_visitAB_) <- colnames(lipidomics_data_visitAB[2:ncol(lipidomics_data_visitAB)])
+```
+
+
+# Define data options for feature selection
+```{r}
+# Feature selection of genes (RNA-seq) based on variance. Features with a variance below the threshold of 0.4 are removed. Calculating the variance of each gene (row) and creating a logical vector indicating genes having a variance greater than 0.4.
+rnaseq_sat_data_visitAB_filtered_data <- rnaseq_sat_data_visitAB_[apply(rnaseq_sat_data_visitAB_, 1, var) > 0.4, ]
+dim(rnaseq_sat_data_visitAB_filtered_data)
+```
+
+# Check for normalization
+## RNA seq
+```{r}
+# Histogram of total distribution
+data_rnaseq <-as.matrix(rnaseq_sat_data_visitAB_filtered_data)
+hist(data_rnaseq , prob=T)
+curve(dnorm(x,mean(data_rnaseq),sd(data_rnaseq)),add=T,col="red")
+```
+
+### Log transformation and scaling
+```{r}
+# RNA-seq data has skewed distribution. Apply centered log transformation (transpose matrix, as the input format is rows=samples, columns=variables)
+rnaseq_sat_data_visitAB_filtered_data_clr <- t( clr( t(rnaseq_sat_data_visitAB_filtered_data) ) )
+
+# Histogram of total distribution
+rna_matrix <-as.matrix(rnaseq_sat_data_visitAB_filtered_data_clr)
+hist(rna_matrix , prob=T)
+curve(dnorm(x,mean(rna_matrix),sd(rna_matrix)),add=T,col="red")
+
+# Check mean of each gene (should equal zero)
+##rowMeans(rna_matrix)
+
+# Check SD of each gene (should equal one)
+##apply(rna_matrix,1,sd)
+
+# Scale data as the SD of the normalized data is != 1
+rnaseq_sat_data_visitAB_filtered_data_clr_scaled <- t( scale( t( rnaseq_sat_data_visitAB_filtered_data_clr ) ) )
+
+# Histogram of total distribution
+rna_norm_scaled_matrix <-as.matrix(rnaseq_sat_data_visitAB_filtered_data_clr_scaled)
+hist(rna_norm_scaled_matrix , prob=T)
+curve(dnorm(x,mean(rna_norm_scaled_matrix),sd(rna_norm_scaled_matrix)),add=T,col="red")
+
+# Histogram of individual distribution of each gene (row)
+##rownum = x
+##hist(rna_norm_scaled_matrix[,rownum] , prob=T)
+##curve(dnorm(x,mean(rna_norm_scaled_matrix[,rownum]),sd(rna_norm_scaled_matrix[,rownum])),add=T,col="red")
+```
+
+
+
+## Metabolomics
+```{r}
+# Histogram of total distribution
+metabolomics_matrix <- as.matrix(metabolomics_data_visitAB_)
+hist(metabolomics_matrix , prob=T)
+curve(dnorm(x,mean(metabolomics_matrix),sd(metabolomics_matrix)),add=T,col="red")
+
+# Check mean of each gene (should equal zero)
+##rowMeans(metabolomics_matrix)
+
+# Check SD of each gene (should equal one)
+##apply(metabolomics_matrix,1,sd)
+```
+
+
+
+## Lipidomics
+```{r}
+# Histogram of total distribution
+lipidomics_matrix <-as.matrix(lipidomics_data_visitAB_)
+hist(lipidomics_matrix , prob=T)
+curve(dnorm(x,mean(lipidomics_matrix),sd(lipidomics_matrix)),add=T,col="red")
+
+# Check mean of each gene (should equal zero)
+##rowMeans(lipidomics_matrix)
+
+# Check SD of each gene (should equal one)
+##apply(lipidomics_matrix,1,sd)
+```
+
+
+# Add missing sample columns to RNA-seq data
+```{r}
+# RNA-seq data
+## Identify missing columns
+missing_cols <- setdiff(metabolomics_data_visitAB$sample_id, names(rnaseq_sat_data_visitAB[2:ncol(rnaseq_sat_data_visitAB)]))
+
+## Get the column order of metabolomics_data_visitAB
+sample_order <- metabolomics_data_visitAB$sample_id
+
+## Add missing columns 
+rnaseq_sat_data_visitAB_allsamples <- as_tibble(rnaseq_sat_data_visitAB_filtered_data) %>% add_column(!!!set_names(rep(list(NA), length(missing_cols)), missing_cols), .before = 1) %>% 
+  select(all_of(sample_order)) %>% as.matrix()
+rownames(rnaseq_sat_data_visitAB_allsamples) <- rownames(rnaseq_sat_data_visitAB_filtered_data)
+```
+
+
+
+# 3-layer multi-omics integration: Create the MOFA object
+```{r}
+# Create a list containing the 3 omics matrices
+omics3layer_matrix_list <- list(RNAseq = rnaseq_sat_data_visitAB_allsamples, 
+                                Lipidomics = lipidomics_data_visitAB_,
+                                Metabolomics = metabolomics_data_visitAB_)
+lapply(omics3layer_matrix_list, dim)
+```
+```{r}
+# Create MOFA object
+MOFAobject_3layer <- create_mofa(omics3layer_matrix_list)
+```
+
+## Plot the data overview
+```{r}
+plot_data_overview(MOFAobject_3layer, colors = c("#336699", "#CC6600", "#F5BD1E")) 
+```
+
+
+
+## Loop defining options for 10 models with factors 1-10
+```{r}
+# Define data options
+data_opts <- get_default_data_options(MOFAobject_3layer)
+
+# Define training options
+train_opts <- get_default_training_options(MOFAobject_3layer)
+
+# Loop over num_factors
+for (num_factors in 1:10) {
+  # Define model options
+  model_opts <- get_default_model_options(MOFAobject_3layer)
+  model_opts$num_factors <- num_factors
+
+  # Build and train the MOFA object
+  MOFAobject <- prepare_mofa(
+    object = MOFAobject_3layer,
+    data_options = data_opts,
+    model_options = model_opts,
+    training_options = train_opts
+  )
+
+  # Train the MOFA model
+  file_name <- paste0("data/02_MOFAmodel_3layer_", num_factors, "factor.hdf5")
+  outfile <- file.path(path, file_name)
+  MOFAobject.trained <- run_mofa(MOFAobject, outfile, use_basilisk = TRUE)
+}
+```
+
+
+

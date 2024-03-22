@@ -1,0 +1,71 @@
+---
+title: "Multi-Omics Integration Analysis"
+subtitle: "Load data"
+author: "Sofie Olund Villumsen"
+date: "13/06/2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Initial settings
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+# RNAseq from subcutanous adipose tissue
+rnaseq_sat_data_visitAB  <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Overfeeding_study/Transcriptomics/data/04_expressionvalues_sat_visitAB_proteincoding_forMOFA2.csv") %>%
+  write_csv(paste(path, "data/01_data_genecounts_proteincoding_rnaseq_sat_reducedsamples_visitAB.csv", sep="/"))
+
+# Metabolomics from serum
+metabolomics_data_visitAB  <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Overfeeding_study/Metabolomics/data/02_metabolomicsdata_visitAB_imputed.csv") %>% 
+  write_csv(paste(path, "data/01_data_abundances_metabolomics_allsamples_visitAB.csv", sep="/"))
+
+# Lipidomics from serum
+lipidomics_data_visitAB  <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Overfeeding_study/Lipidomics/data/01_lipidomicsdata_visitAB_imputed.csv") %>% 
+  write_csv(paste(path, "data/01_data_abundances_lipidomics_allsamples_visitAB.csv", sep="/"))
+
+# Clinical data/Meta data
+clinicaldata_visitAB <- read_csv("L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/Overfeeding_study/Transcriptomics/data/02_clinicaldata_selected_imputed.csv") %>% 
+  write_csv(paste(path, "data/01_data_clinicaldata_allsamples_visitAB.csv", sep="/")) 
+```
+
+
+Data wrangling
+```{r}
+# Metabolomics
+metabolomics_data_visitAB %>% 
+  filter(sample_id %in% colnames(rnaseq_sat_data_visitAB[2:ncol(rnaseq_sat_data_visitAB)])) %>% 
+  write_csv(paste(path, "data/01_data_abundances_metabolomics_reducedsamples_visitAB.csv", sep="/"))
+
+# Lipidomics 
+lipidomics_data_visitAB %>% 
+  filter(sample_id %in% colnames(rnaseq_sat_data_visitAB[2:ncol(rnaseq_sat_data_visitAB)])) %>% 
+  write_csv(paste(path, "data/01_data_abundances_lipidomics_reducedsamples_visitAB.csv", sep="/")) 
+
+# Clinical data
+clinicaldata_visitAB %>% 
+  filter(sample_id %in% colnames(rnaseq_sat_data_visitAB[2:ncol(rnaseq_sat_data_visitAB)])) %>% 
+  write_csv(paste(path, "data/01_data_clinicaldata_reducedsamples_visitAB.csv", sep="/"))
+```
+
+
+
+
+

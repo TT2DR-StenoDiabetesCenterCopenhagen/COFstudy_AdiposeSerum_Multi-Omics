@@ -1,0 +1,121 @@
+---
+title: "Multi-omics overfeeding Analysis"
+subtitle: "Pathway analysis"
+author: "Sofie Olund Villumsen"
+date: "29/11/2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Initial settings
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggsankey)
+library(RColorBrewer)
+library(networkD3)
+library(webshot)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics/"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+enricher_top10genes <- read_tsv(paste(path, "pathway_analysis/Enricer_output/Multi-omics_top10genes_rnaseqloadings_KEGG_2021.txt", sep = "/"))
+```
+
+# Top 10 genes 
+## Sankey plot
+```{r}
+# Make Sankey df
+sankeydf_enricher_top10genes <- enricher_top10genes %>%
+  filter(`Adjusted P-value` < 0.05) %>% 
+  select(Genes, Term,`Adjusted P-value`) %>% 
+  separate_rows(Genes, sep = ";") %>% 
+  separate(Term, into = c("Pathways"), sep = "R-HSA") 
+sankeydf_enricher_top10genes
+```
+
+
+Nodes: top10genes
+```{r}
+# Genes unique
+df_top10genes_unique_genes <- sankeydf_enricher_top10genes %>%
+  distinct(Genes) %>%
+  mutate(ID = Genes, 
+         x = 1, 
+         y = row_number())
+
+# Pathways unique
+df_top10genes_unique_pathways <- sankeydf_enricher_top10genes %>%
+  distinct(Pathways) %>%
+  mutate(ID = Pathways, 
+         x = 2, 
+         y = row_number())
+
+# Concatenate df's
+nodes_top10genes <- bind_rows(df_top10genes_unique_genes, df_top10genes_unique_pathways) %>% 
+  select(ID) %>% as.data.frame() %>% 
+  mutate(ID_nr = row_number() -1) 
+nodes_top10genes
+```
+
+Edges: top10genes
+```{r}
+edges_top10genes <- sankeydf_enricher_top10genes %>%
+  mutate(gene_type = Genes) %>% 
+  left_join(nodes_top10genes, by = c("Genes" = "ID")) %>% 
+  left_join(nodes_top10genes, by = c("Pathways" = "ID")) %>% 
+  mutate(source = ID_nr.x,
+         target = ID_nr.y,
+         value = -log10(`Adjusted P-value`)) %>% 
+  select(source, target, value, gene_type)
+
+edges_top10genes
+```
+
+Create sankey plot: top10genes
+```{r}
+# Create the network graph
+network_top10genes <- sankeyNetwork(
+  Links = edges_top10genes,
+  Nodes = nodes_top10genes,
+  Source = "source",
+  Target = "target",
+  Value = "value",
+  NodeID = "ID",
+  LinkGroup = "gene_type", # hash out to color nodes
+  fontSize = 70,
+  nodeWidth = 40,
+  NodeGroup = NULL, # hash out to color nodes
+  sinksRight = FALSE,
+  colourScale = JS("d3.scaleOrdinal(d3.schemeCategory20);")
+)
+
+network_top10genes
+
+# Save file paths
+savesankey_html_top10genes <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_top10genes_pathways_multiomics.html", sep = "/")
+savesankey_jpeg_top10genes <- paste(path, "pathway_analysis/sankeyplot/04_sankeyplot_top10genes_pathways_multiomics.jpeg", sep = "/")
+
+# Save network as html
+saveNetwork(network_top10genes, savesankey_html_top10genes)
+
+# Save network as tiff
+webshot(savesankey_html_top10genes, savesankey_jpeg_top10genes, zoom = 3,
+        vwidth = 3000,
+        vheight = 2000)
+```
+

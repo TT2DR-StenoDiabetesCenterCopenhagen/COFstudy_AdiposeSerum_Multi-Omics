@@ -1,0 +1,642 @@
+---
+title: "Multi-Omics Integration Analysis"
+subtitle: "Downstream multi-Omics Data Integration Analyses w/ MOFA2"
+author: "Sofie Olund Villumsen"
+date: "14/06/2023"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+---
+
+# Initial settings
+Clear workspace
+```{r echo=FALSE}
+rm(list = ls()) 
+```
+
+Load packages
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(MOFA2)
+library(correlation) 
+library(ggside)
+```
+
+Set wd
+```{r setup}
+path <- "L:/LovbeskyttetMapper/HCOF Stem Cells/Sofie_Databehandling/github/COFpaper_3omicslayers/Multi-omics"
+
+knitr::opts_knit$set(root.dir = path)
+```
+
+Load data
+```{r message=FALSE}
+# Clinical data/meta data
+clinicaldata_visitAB <- read_csv(paste(path, "data/01_data_clinicaldata_allsamples_visitAB.csv", sep="/")) %>% 
+  select(everything(), -id) 
+```
+
+# Load 3 layer omics models
+```{r}
+model_1factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_1factor.hdf5", sep="/"))
+model_2factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_2factor.hdf5", sep="/"))
+model_3factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_3factor.hdf5", sep="/"))
+model_4factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_4factor.hdf5", sep="/"))
+model_5factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_5factor.hdf5", sep="/"))
+model_6factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_6factor.hdf5", sep="/"))
+model_7factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_7factor.hdf5", sep="/"))
+model_8factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_8factor.hdf5", sep="/"))
+model_9factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_9factor.hdf5", sep="/"))
+model_10factor <- load_model(paste(path, "data/02_MOFAmodel_3layer_10factor.hdf5", sep="/"))
+```
+
+
+# Overview of data
+```{r}
+# Overview plot, which shows how many views (rows) and how many groups (columns) exist, what are their corresponding dimensions and how many missing information they have (grey bars).
+dataoverview_obj <- plot_data_overview(model_1factor, 
+                                       colors = c("#63A0CB", "#FFA657", "#6CBD6C")) 
+
+# Save the object as a PDF file
+tiff(file = paste(path, "results/03_dataoverview_3layers_visitAB_multiomics.tiff", sep="/"),
+    width = 10,
+    height = 6,
+    units = "cm",
+    res = 500)
+
+print(dataoverview_obj)
+dev.off()
+
+dataoverview_obj
+```
+
+
+# Variance decomposition
+```{r}
+# The first step in the MOFA analysis is to quantify the amount of variance explained (R2) by each factor in each data modality.
+
+f01 <- model_1factor@cache$variance_explained$r2_total[[1]] # group 1
+f02 <- model_2factor@cache$variance_explained$r2_total[[1]] # group 1
+f03 <- model_3factor@cache$variance_explained$r2_total[[1]] # group 1
+f04 <- model_4factor@cache$variance_explained$r2_total[[1]] # group 1
+f05 <- model_5factor@cache$variance_explained$r2_total[[1]] # group 1
+f06 <- model_6factor@cache$variance_explained$r2_total[[1]] # group 1
+f07 <- model_7factor@cache$variance_explained$r2_total[[1]] # group 1
+f08 <- model_8factor@cache$variance_explained$r2_total[[1]] # group 1
+f09 <- model_9factor@cache$variance_explained$r2_total[[1]] # group 1
+f10 <- model_10factor@cache$variance_explained$r2_total[[1]] # group 1
+
+data_factors <- data.frame(f01,f02,f03,f04,f05,f06,f07,f08,f09,f10) %>% 
+  mutate(omics = rownames(.)) %>% 
+  pivot_longer(cols = starts_with("f"), names_to = "factors" , values_to = "expl_var") 
+data_factors
+```
+
+## Plot proportion of variance explained by omics view
+```{r}
+explainedvar_plot <- ggplot(data = data_factors, aes(x = factors, y = expl_var, col = omics, group = omics)) +
+  geom_point(size = 2) +
+  geom_line(size = 0.8) +
+  # Customize the plot aesthetics
+  labs(x = "Factors", y = "Explained variance (%)", title = "Proportion of variance explained by omics view") +
+  theme_minimal() +
+  scale_color_manual(values = c("#63A0CB", "#6CBD6C", "#FFA657"),
+                     breaks = c("RNAseq", "Metabolomics", "Lipidomics"))
+
+
+# Save the object as a PDF file
+png(file = paste(path, "results/03_explainedvarianceplot_3layers_visitAB_multiomics.png", sep="/"),
+    width = 13,
+    height = 8,
+    units = "cm",
+    res = 300)
+
+print(explainedvar_plot)
+dev.off()
+
+explainedvar_plot
+```
+
+## Variance explained for every factor (f1-10) in per view and group
+```{r}
+factor10_varmatrix <- model_10factor@cache$variance_explained$r2_per_factor[[1]] %>% # group 1  
+  as.data.frame()
+factor10_varmatrix
+
+factor10_df <- as_tibble(factor10_varmatrix) %>% 
+  mutate(Factors = rownames(factor10_varmatrix))
+factor10_df
+```
+
+## Variance explained for every factor (f1-2) in per view and group
+```{r}
+# Two factors are chosen, with a cutoff of minimum 2% in each omics view for each factor (biological meaning)
+factor2_varmatrix <- model_2factor@cache$variance_explained$r2_per_factor[[1]] %>% # group 1  
+  as.data.frame() 
+
+factor2_df <- as_tibble(factor2_varmatrix) %>% 
+  mutate(Factors = rownames(factor2_varmatrix))
+factor2_df
+```
+
+## Total variande explained for each factor
+```{r}
+total_factorvariance <- model_2factor@cache$variance_explained$r2_per_factor[[1]] %>% # group 1  
+  as.data.frame() %>% 
+  mutate(`Total variance` = rowSums(across(RNAseq:Lipidomics)),
+         Factor = rownames(.)) %>% 
+  select(Factor, `Total variance`)
+total_factorvariance
+```
+
+
+## Add metadata to the model (f1-2)
+```{r}
+clinicaldata_visitAB_ <- clinicaldata_visitAB  %>% 
+  rename(sample = sample_id) %>% 
+  mutate(bwcat_visit = paste(.$bwcat, .$visit, sep="_"))
+
+samples_metadata(model_2factor) <- clinicaldata_visitAB_
+head(model_2factor@samples_metadata, n=25)
+```
+
+# Visualizations
+
+## Plot variance explained pr factor
+```{r}
+# Reshape the data frame to long format
+df_long <- pivot_longer(factor2_df, cols = -Factors, names_to = "Omics_Type", values_to = "Value")
+
+# Specify the desired order for the Omics_Type variable
+df_long$Omics_Type <- factor(df_long$Omics_Type, levels = c("Metabolomics", "Lipidomics", "RNAseq", "Total variance"))
+
+df_long$Factors <- factor(df_long$Factors, levels = c("Factor1", "Factor2"))
+
+# Create the ggplot
+var_expl_prfactor <- ggplot(df_long, aes(x = Factors, y = Value, fill = Omics_Type)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.7) +
+  labs(x = "Factor \n(multi-omics feature combination)", y = "Variance explained (%)", fill = "Omics Type") +
+  scale_fill_manual(values = c("RNAseq" = "#63A0CB", "Metabolomics" = "#6CBD6C", "Lipidomics" = "#FFA657", "Total variance" = "lightgrey")) +
+  theme_classic() +
+  theme(
+    # Adjust the size of the legend title
+    legend.title = element_text(size = 20),
+    # Adjust the size of legend text
+    legend.text = element_text(size = 17),
+    # Adjust the size of axis text
+    axis.text.x = element_text(size = 17),
+    axis.text.y = element_text(size = 17),
+    axis.title.x = element_text(size = 20),
+    axis.title.y = element_text(size = 20)
+  )
+
+var_expl_prfactor
+
+# Save the object as a PDF file
+tiff(file = paste(path, "results/03_explainedvarianceprfactorplot_3layers_visitAB_multiomics.tiff", sep="/"),
+    width = 25,
+    height = 15,
+    units = "cm",
+    res = 500)
+
+print(var_expl_prfactor)
+dev.off()
+
+
+```
+
+
+## Plot variance estimates
+```{r}
+plot_variance_explained(model_2factor, x="view", y="factor")
+```
+
+
+## Plot variance explained pr. omics view
+```{r}
+plot_variance_explained(model_2factor, x="group", y="factor", plot_total = T)[[2]] 
+```
+
+## Plot single factors
+```{r}
+model2factor_df <- as.data.frame(model_2factor@expectations$Z$group1) %>% 
+  mutate(sample = rownames(model_2factor@expectations$Z$group1)) %>% 
+  left_join(clinicaldata_visitAB_, by = join_by(sample))
+```
+
+### Bwcat and visit
+```{r}
+plot_factor(model_2factor, 
+            factors = 1:2, 
+            color_by = "bwcat_visit",
+            shape_by = "visit"
+)
+```
+### Birthweight
+```{r}
+plot_factor(model_2factor, 
+  factor = 1:2,
+  color_by = "Birth weight - NAFLD status"
+)
+```
+## Boxplot 1: bwcat and visit
+```{r}
+ggplot(model2factor_df, aes(bwcat_visit, Factor1)) + 
+  geom_boxplot(aes(fill = factor(bwcat_visit)), alpha = 0.5) +
+  theme_classic() + 
+  geom_dotplot(binaxis='y', stackdir='center', position=position_dodge(1), binwidth =0.1) 
+#+ ylim(-5.5, 5)
+
+
+ggplot(model2factor_df, aes(bwcat_visit, Factor2))  + 
+  geom_boxplot(aes(fill = factor(bwcat_visit)), alpha = 0.5) +
+  theme_classic() + 
+  geom_dotplot(binaxis='y', stackdir='center', position=position_dodge(1), binwidth =0.05) 
+#+  ylim(-5.5, 5)
+
+```
+
+
+## Boxplot 2: bwcat and visit
+```{r}
+p <- plot_factor(model_2factor, 
+  factors = c(1,2),
+  group_by = "bwcat_visit",
+  color_by = "bwcat_visit",
+  dot_size = 3,        # change dot size
+  dodge = T,           # dodge points with different colors
+  legend = T,          # remove legend
+  add_violin = F,      # add violin plots,
+  violin_alpha = 0.25,  # transparency of violin plots
+  add_boxplot = T
+) 
+  
+p
+```
+
+## Plot combinations of factors
+###  Scatter plot 1: bwcat and visit
+```{r}
+plot_factors(model_2factor, 
+  factors = 1:2,
+  color_by = "bwcat_visit",
+  dot_size = 4,
+  alpha = 0.7)   +
+  stat_ellipse(type = "t", level = 0.95) 
+```
+
+###  Scatter plot 2: bwcat and visit
+```{r}
+ggplot(model2factor_df, aes(x = Factor1, y = Factor2, color = bwcat_visit)) +
+  geom_point(size = 3, alpha = 0.6) +
+  stat_ellipse(size = 0.8, alpha = 0.5) +
+  xlab(paste(total_factorvariance$Factor[1], " (" , round(total_factorvariance$`Total variance`[1]), "% combined variation)", sep = "")) + 
+  ylab(paste(total_factorvariance$Factor[2], " (" , round(total_factorvariance$`Total variance`[2]), "% combined variation)", sep = "")) + 
+  theme_classic() 
+```
+
+### Scatter boxplot
+```{r}
+
+model2factor_df_scatterboxplot <- model2factor_df %>% 
+  mutate(Group = case_when(
+    bwcat_visit == "NBW_A" ~ "NBW baseline",
+    bwcat_visit == "NBW_B" ~ "NBW COF",
+    bwcat_visit == "LBW_A" ~ "LBW baseline",
+    bwcat_visit == "LBW_B" ~ "LBW COF"
+  )) 
+
+model2factor_df_scatterboxplot$Group <- factor(model2factor_df_scatterboxplot$Group,
+                                               levels = c("NBW baseline", "NBW COF", "LBW baseline", "LBW COF"))
+
+# Define custom colors for the groups
+custom_colors <- c("NBW baseline" = "#00AFBB", "NBW COF" = "#045F5F","LBW baseline" = "#E7B800", "LBW COF" = "#F87431")
+
+# Scatterboxplot
+scatterboxplot <- ggplot(model2factor_df_scatterboxplot, aes(x = Factor1, y = Factor2, fill = Group)) +
+  geom_point(aes(color = Group), size = 2) +
+  
+  stat_ellipse(size = 0.8, aes(color = Group, fill = Group)) +
+  xlab(paste("LF1", " (" , round(total_factorvariance$`Total variance`[1]), 
+             "% combined variation)", sep = "")) + 
+  ylab(paste("LF2", " (" , round(total_factorvariance$`Total variance`[2]), 
+             "% combined variation)", sep = "")) + 
+  
+  geom_xsideboxplot(aes(y =Group), orientation = "y") +
+  scale_xsidey_discrete() + 
+  geom_ysideboxplot(aes(x = Group), orientation = "x") +
+  scale_ysidex_discrete(guide = guide_axis(angle = 90)) +
+  
+  # Use custom colors for the groups
+  scale_fill_manual(values = custom_colors) +
+  scale_color_manual(values = custom_colors) +
+  
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  theme(ggside.panel.scale = .3,
+        ggside.panel.border = element_rect(NA, "white"),
+        ggside.panel.grid = element_line("white"),
+
+            # Adjust the size of the legend title
+        legend.title = element_text(size = 17),
+    # Adjust the size of legend text
+    legend.text = element_text(size = 14),
+    # Adjust the size of axis text
+    axis.title.x = element_text(size = 17),
+    axis.title.y = element_text(size = 17),
+        
+        # Remove group names on boxplots
+        axis.text.y = element_blank(),
+        axis.text.x = element_blank()
+        
+        )
+scatterboxplot
+
+ggsave(paste(path, "results/03_scatterboxplot_f1f2_visitAB_multiomics.png", sep="/"), plot = scatterboxplot, device = "png", width = 8.5, height = 6)
+
+# TIFF file
+tiff(file = paste(path, "results/03_scatterboxplot_f1f2_visitAB_multiomics.tiff", sep="/"), units="in", width=8.5, height=6, res=600, pointsize = 0.0001)
+print(scatterboxplot)
+dev.off()
+```
+
+
+
+
+
+## Plot feature weights
+The weights provide a score for how strong each feature relates to each factor. Features with no association with the factor have values close to zero, while features with strong association with the factor have large absolute values. The sign of the weight indicates the direction of the effect: a positive weight indicates that the feature has higher levels in the cells with positive factor values, and vice versa.
+
+
+### RNAseq weights
+```{r}
+plot_weights(model_2factor,
+  view = "RNAseq",
+  factor = c(1,2),
+  nfeatures = 10,     # Number of features to highlight
+  scale = T,          # Scale weights from -1 to 1
+  abs = F             # Take the absolute value?
+)
+```
+
+```{r}
+rnaseq_weights_plot <- plot_top_weights(model_2factor,
+  view = "RNAseq",
+  factor = c(1,2),
+  nfeatures = 10, 
+  abs = T
+)
+
+# Save the object as a PDF file
+tiff(file = paste(path, "results/03_weightsplot_rnaseq_3layers_visitAB_multiomics.tiff", sep="/"),
+    width = 25,
+    height = 10,
+    units = "cm",
+    res = 500,
+    pointsize = 0.0001)
+print(rnaseq_weights_plot)
+dev.off()
+
+rnaseq_weights_plot
+```
+
+
+### Metabolomics weights
+```{r}
+plot_weights(model_2factor,
+  view = "Metabolomics",
+  factor = c(1,2),
+  nfeatures = 10,     # Number of features to highlight
+  scale = T,          # Scale weights from -1 to 1
+  abs = F             # Take the absolute value?
+)
+```
+
+```{r}
+metabolomics_weights_plot <- plot_top_weights(model_2factor,
+  view = "Metabolomics",
+  factor = c(1,2),
+  nfeatures = 10
+)
+
+# Save the object as a PDF file
+tiff(file = paste(path, "results/03_weightsplot_metabolomics_3layers_visitAB_multiomics.tiff", sep="/"),
+    width = 30,
+    height = 10,
+    units = "cm",
+    res = 500,
+    pointsize = 0.0001)
+print(metabolomics_weights_plot)
+dev.off()
+
+metabolomics_weights_plot
+```
+
+
+
+### Lipidomics weights
+```{r}
+plot_weights(model_2factor,
+  view = "Lipidomics",
+  factor = c(1,2),
+  nfeatures = 10,     # Number of features to highlight
+  scale = T,          # Scale weights from -1 to 1
+  abs = F             # Take the absolute value?
+)
+```
+
+```{r}
+lipidomics_weights_plot <- plot_top_weights(model_2factor,
+  view = "Lipidomics",
+  factor = c(1,2),
+  nfeatures = 10, 
+  abs = F
+)
+
+# Save the object as a PDF file
+tiff(file = paste(path, "results/03_weightsplot_lipidomics_3layers_visitAB_multiomics.tiff", sep="/"),
+    width = 27,
+    height = 10,
+    units = "cm",
+    res = 500,
+    pointsize = 0.0001)
+
+print(lipidomics_weights_plot)
+dev.off()
+
+lipidomics_weights_plot
+```
+
+
+## Heatmap of patterns in the input data
+Observe the coordinated heterogeneity that MOFA captures in the original data, instead of weights. Top features are selected by its weight in the selected factor. By default, samples are ordered according to their corresponding factor value.
+
+### RNAseq heatmap f2
+```{r}
+heatmap_rnaseq_obj <- plot_data_heatmap(model_2factor,
+  view = "RNAseq",         # view of interest
+  factor = 2,             # factor of interest
+  features = 10,          # number of features to plot (they are selected by weight)
+  
+  # extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE,
+  show_rownames = TRUE, show_colnames = TRUE
+)
+
+
+# Save the object as a PDF file
+png(file = paste(path, "results/03_heatmap_rnaseq_f2_visitAB_multiomics.png", sep="/"),
+    width = 40,
+    height = 30,
+    units = "cm",
+    res = 300)
+
+print(heatmap_rnaseq_obj)
+dev.off()
+
+heatmap_rnaseq_obj
+```
+
+
+### Metabolomics heatmap f2
+```{r}
+heatmap_metabolomics_obj <- plot_data_heatmap(model_2factor,
+  view = "Metabolomics",         # view of interest
+  factor = 2,             # factor of interest
+  features = 10,          # number of features to plot (they are selected by weight)
+  
+  # extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = T,
+  show_rownames = TRUE, show_colnames = TRUE
+)
+
+# Save the object as a PDF file
+png(file = paste(path, "results/03_heatmap_metabolomics_f2_visitAB_multiomics.png", sep="/"),
+    width = 40,
+    height = 30,
+    units = "cm",
+    res = 300)
+
+print(heatmap_metabolomics_obj)
+dev.off()
+
+heatmap_metabolomics_obj
+```
+
+### Lipidomics heatmap f2
+```{r}
+heatmap_lipidomics_obj <- plot_data_heatmap(model_2factor,
+  view = "Lipidomics",         # view of interest
+  factor = 2,             # factor of interest
+  features = 10,          # number of features to plot (they are selected by weight)
+  
+  # extra arguments that are passed to the `pheatmap` function
+  cluster_rows = TRUE, cluster_cols = TRUE,
+  show_rownames = TRUE, show_colnames = TRUE
+)
+
+
+# Save the object as a PDF file
+png(file = paste(path, "results/03_heatmap_lipidomics_f2_visitAB_multiomics.png", sep="/"),
+    width = 40,
+    height = 30,
+    units = "cm",
+    res = 300)
+
+print(heatmap_lipidomics_obj)
+dev.off()
+
+heatmap_lipidomics_obj
+```
+
+## Linear regression of observations vs factor values
+It is useful to add a linear regression estimate to visualize if the relationship between (top) features and factor values is linear.
+
+### RNAseq scatter plots f2
+```{r}
+plot_data_scatter(model_2factor,
+  view = "RNAseq",         # view of interest
+  factor = 2, # factor of interest
+  features = 10,           # number of features to plot (they are selected by weight)
+  add_lm = TRUE,          # add linear regression
+  color_by = "bwcat_visit"
+)
+```
+
+### Metabolomics scatter plots f2
+```{r}
+plot_data_scatter(model_2factor,
+  view = "Metabolomics",         # view of interest
+  factor = 2,             # factor of interest
+  features = 10,           # number of features to plot (they are selected by weight)
+  add_lm = TRUE,          # add linear regression
+  color_by = "bwcat_visit"
+)
+```
+
+### Lipidomics scatter plots f2
+```{r}
+plot_data_scatter(model_2factor,
+  view = "Lipidomics",         # view of interest
+  factor = 2,             # factor of interest
+  features = 10,           # number of features to plot (they are selected by weight)
+  add_lm = TRUE,          # add linear regression
+  color_by = "bwcat_visit"
+)
+```
+
+# Other functionalities
+
+## Correlate with clinical variables
+```{r}
+clin_var <- model2factor_df %>% 
+  mutate(`Birth weight` = `Birth weight - NAFLD status`) %>% 
+  select(c("HDL cholesterol", "LDL cholesterol", "Total cholesterol", "F-triglyceride", "GGT", "ALAT", "ASAT", "Hepatic fat", "HOMA-IR", "F-insulin", "F-C-peptide", "F-glucose", "VAT mass", "Total fat mass", "Total lean mass", "BMI", "Weight", "Height", "Birth weight", "NAFLD status", "Visit", "Birth weight category"))
+
+rownames(clin_var) <- model2factor_df$sample
+
+factors <- model2factor_df %>% 
+  select(c(Factor1, Factor2))
+rownames(factors) <- model2factor_df$sample
+
+# Compute correlation (rho) and p-values (BH) for several pairs of variables at once.
+corr_matrix <- correlation(factors, clin_var, method = "pearson", p_adjust = "BH") %>%  as_tibble()
+
+corr_matrix_ <- corr_matrix %>% 
+  filter(p<0.01)
+corr_matrix_
+```
+
+### Eigencorr plot
+```{r}
+row_order <- colnames(clin_var)
+
+# Create a correlation heatmap (rho)
+heatmap_rho <- ggplot(corr_matrix, aes(Parameter1, Parameter2, fill = r)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "#283A90", mid = "white", high = "#BE2625", midpoint = 0) +
+  geom_text(aes(label = ifelse(abs(r) > 0.20, paste(round(r, 2), ifelse(p <= 0.001, "***", ifelse(p <= 0.01, "**", ifelse(p <= 0.05, "*", "")))), "")), color = "black", size=3) +
+  labs(title = "Correlation of LFs and clinical variables (Pearsons r)",
+       x = "",
+       y = "") + 
+  theme_classic() +
+  scale_y_discrete(limits = row_order)
+
+
+tiff(file = paste(path, "results/03_eigencorplot_PearsonsR_visitAB_multiomics.tiff", sep="/"), units="in", width=8, height=13, res=300, pointsize = 0.0001)
+
+print(heatmap_rho)
+
+dev.off()
+
+heatmap_rho
+```
+
+
+For further info see: 
+https://raw.githack.com/bioFAM/MOFA2_tutorials/master/R_tutorials/downstream_analysis.html 
+
+
+
+
