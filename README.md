@@ -1,4 +1,4 @@
-# COFpaper_omics_adiposetissue
+#COFstudy_AdiposeSerum_Multi-Omics 
 **Abstract**
 
 Low birthweight (LBW) is a risk factor of type-2 diabetes (T2D). We hypothesized that 4-weeks carbohydrate overfeeding (COF) would unmask key T2D perturbations among 22 non-obese LBW men, compared with 21 normal birthweight (NBW) controls. Five LBW versus 0 NBW subjects had screen-detected non-alcoholic fatty liver disease (NAFLD).
