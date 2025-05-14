@@ -27,13 +27,7 @@ Bioinformatic analyses aims to find both lipidomics, metabolomics and transcript
 - [Multi-omics](Multi-omics/scripts) - analysis of the integration of metabolomics, lipidomics, and RNAseq.
 
 
-
-
-
-
-
-# COFstudy_AdiposeSerum_Multi-Omics 
-**Abstract**
+## Abstract
 
 Low birthweight (LBW) is a risk factor of type-2 diabetes (T2D). We hypothesized that 4-weeks carbohydrate overfeeding (COF) would unmask key T2D perturbations among 22 non-obese LBW men, compared with 21 normal birthweight (NBW) controls. Five LBW versus 0 NBW subjects had screen-detected non-alcoholic fatty liver disease (NAFLD).
 Body composition, hepatic fat and glucose production, insulin resistance, energy expenditure, serum metabolomics and lipidomics, as well as abdominal subcutaneous adipose tissue histology and transcriptomics, were measured before and after COF with +25% energy. 
@@ -41,6 +35,3 @@ Body weight, lean and fat mass, as well as hepatic fat content, increased to the
 The results provide causal evidence of differential metabolic perturbations in LBW subjects during COF, which may not be explained by body composition or liver fat differences per se.  
 
 Key words: Carbohydrate overfeeding, low birthweight, hepatic fat content, hepatic glucose production, insulin resistance, resting energy expenditure, metabolomics, lipidomics, adipose tissue morphology, RNA-seq. 
-
--------------------------------------------------------------------------
-The code include analysis of the three omics layers (metabolomics, lipidomics, RNA-seq) and the multi-omics integration
