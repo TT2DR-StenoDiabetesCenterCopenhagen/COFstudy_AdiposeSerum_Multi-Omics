@@ -1,3 +1,37 @@
+# Serum lipidomics, serum metabolomics, and adipose tissue RNA-seq analysis from low and normal birth weight individuals
+
+### Author:
+
+- Sofie Olund Villumsen, [sofie.olund.villumsen.02@regionh.dk](mailto:sofie.olund.villumsen.02@regionh.dk)
+
+## PI
+
+Allan Vaag, [allan.vaag@med.lu.se](mailto:allan.vaag@med.lu.se)
+
+## Project
+
+Human low birth weight (LBW) subjects and matched normal birth weight (NBW) subjects
+studied before and after 4 weeks of high carbohydrate overfeeding, 
+and again after 12 weeks of lifestyle rehabilitation with diet and/or physical activity.
+
+Blood samples were collected and quantified. 
+Adipose tissue biopsies were obtained and processed for bulk RNA sequencing.
+
+Bioinformatic analyses aims to find both lipidomics, metabolomics and transcriptomic effects and link them with each other.
+
+## Analyses
+
+- [Metabolomics](Metabolomics/scripts) - analysis of the metabolomics data.
+- [Lipidomics](Lipidomics/scripts) - analysis of the lipidomics data.
+- [RNAseq](Transcriptomics/scripts) - analysis of the RNAseq data.
+- [Multi-omics](Multi-omics/scripts) - analysis of the integration of metabolomics, lipidomics, and RNAseq.
+
+
+
+
+
+
+
 # COFstudy_AdiposeSerum_Multi-Omics 
 **Abstract**
 
